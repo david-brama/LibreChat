@@ -186,7 +186,7 @@ edit.post('/anthropic', async (c) => {
               sender: 'assistant',
               text: responseText,
               isCreatedByUser: false,
-              model: 'claude-3-5-sonnet-20241022',
+              model: 'claude-sonnet-4-20250514',
               error: false,
               tokenCount,
             };
@@ -213,7 +213,7 @@ edit.post('/anthropic', async (c) => {
           sender: 'assistant',
           text: responseText,
           isCreatedByUser: false,
-          model: 'claude-3-5-sonnet-20241022',
+          model: 'claude-sonnet-4-20250514',
           error: false,
           tokenCount,
           createdAt: assistantMessageToUpdate?.createdAt || new Date().toISOString(),

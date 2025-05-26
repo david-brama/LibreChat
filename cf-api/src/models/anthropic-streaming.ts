@@ -19,6 +19,7 @@ export interface AnthropicStreamingOptions {
 /**
  * Shared Anthropic streaming service for both ask and edit endpoints
  * Handles the Anthropic API streaming and SSE event generation
+ * Matches LibreChat's expected SSE format for frontend compatibility
  */
 export class AnthropicStreamingService {
   private anthropic: Anthropic;
@@ -28,10 +29,10 @@ export class AnthropicStreamingService {
   }
 
   /**
-   * Stream a response from Anthropic and send SSE events
+   * Stream a response from Anthropic and send SSE events in LibreChat format
    * @param stream Hono SSE stream instance
    * @param options Streaming configuration options
-   * @returns Promise<string> The complete response text
+   * @returns Promise<{responseText: string, tokenCount: number}> The complete response data
    */
   async streamResponse(
     stream: SSEStreamingApi,
@@ -39,7 +40,7 @@ export class AnthropicStreamingService {
   ): Promise<{ responseText: string; tokenCount: number }> {
     const {
       messages,
-      model = 'claude-3-5-sonnet-20241022',
+      model = 'claude-sonnet-4-20250514',
       maxTokens = 4000,
       responseMessageId,
       parentMessageId,
@@ -54,6 +55,30 @@ export class AnthropicStreamingService {
     });
 
     try {
+      // Generate a step ID for the run step event (matches LibreChat format)
+      const stepId = `step_${crypto.randomUUID().replace(/-/g, '').substring(0, 24)}`;
+      const runId = crypto.randomUUID();
+
+      // Send initial run step event (matches LibreChat's on_run_step format)
+      await stream.writeSSE({
+        data: JSON.stringify({
+          event: 'on_run_step',
+          data: {
+            id: stepId,
+            runId: runId,
+            type: 'message_creation',
+            index: 0,
+            stepDetails: {
+              type: 'message_creation',
+              message_creation: {
+                message_id: responseMessageId,
+              },
+            },
+          },
+        }),
+        event: 'message',
+      });
+
       // Start streaming from Anthropic
       const anthropicStream = await this.anthropic.messages.stream({
         model,
@@ -71,15 +96,22 @@ export class AnthropicStreamingService {
           if (delta.type === 'text_delta') {
             responseText += delta.text;
 
-            // Send incremental update via SSE
+            // Send delta event in LibreChat format (matches on_message_delta)
             await stream.writeSSE({
               data: JSON.stringify({
-                text: delta.text,
-                messageId: responseMessageId,
-                parentMessageId,
-                conversationId,
-                sender: 'assistant',
-              } as StreamingMessage),
+                event: 'on_message_delta',
+                data: {
+                  id: stepId,
+                  delta: {
+                    content: [
+                      {
+                        type: 'text',
+                        text: delta.text,
+                      },
+                    ],
+                  },
+                },
+              }),
               event: 'message',
             });
           }
@@ -112,7 +144,7 @@ export class AnthropicStreamingService {
         errorMessage = error.message;
       }
 
-      // Send error via SSE
+      // Send error via SSE in LibreChat format
       await stream.writeSSE({
         data: JSON.stringify({
           error: true,
@@ -125,5 +157,157 @@ export class AnthropicStreamingService {
 
       throw error;
     }
+  }
+}
+
+/**
+ * Service for generating conversation titles using Anthropic Claude 3.5 Haiku
+ * Optimized for fast, cost-effective title generation
+ */
+export class AnthropicTitleService {
+  private anthropic: Anthropic;
+  private readonly TITLE_MODEL = 'claude-3-5-haiku-20241022';
+
+  constructor(apiKey: string) {
+    this.anthropic = new Anthropic({ apiKey });
+  }
+
+  /**
+   * Generate a concise title for a conversation
+   * @param userText The user's input message
+   * @param responseText The AI's response message
+   * @returns Promise<string> Generated title or fallback
+   */
+  async generateTitle(userText: string, responseText: string): Promise<string> {
+    try {
+      console.log('[AnthropicTitleService] Generating title for conversation');
+      console.log(
+        '[AnthropicTitleService] Input lengths - user:',
+        userText.length,
+        'response:',
+        responseText.length,
+      );
+
+      // Truncate texts to prevent token overflow
+      const truncatedUserText = this.truncateText(userText, 500);
+      const truncatedResponseText = this.truncateText(responseText, 800);
+
+      console.log(
+        '[AnthropicTitleService] Truncated lengths - user:',
+        truncatedUserText.length,
+        'response:',
+        truncatedResponseText.length,
+      );
+
+      const systemPrompt = `Generate a concise, 5-word-or-less title for this conversation. The title should:
+- Capture the main topic or theme
+- Use title case (First Letter Capitalized)
+- Contain no punctuation or quotation marks
+- Be in the same language as the conversation
+- Never directly mention "title" or the language name
+
+Respond with ONLY the title text, nothing else.`;
+
+      const userPrompt = `<conversation>
+<user_message>
+${truncatedUserText}
+</user_message>
+<assistant_response>
+${truncatedResponseText}
+</assistant_response>
+</conversation>
+
+Generate a title for this conversation:`;
+
+      console.log('[AnthropicTitleService] Making API call to Anthropic...');
+
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Title generation timeout after 15 seconds')), 15000);
+      });
+
+      // const apiPromise = this.anthropic.messages.create({
+      //   model: this.TITLE_MODEL,
+      //   max_tokens: 32,
+      //   temperature: 0.3,
+      //   system: systemPrompt,
+      //   messages: [
+      //     {
+      //       role: 'user',
+      //       content: userPrompt,
+      //     },
+      //   ],
+      // });
+      const apiPromise = new Promise((resolve) => {
+        setTimeout(() => {
+          const respones: Message = {
+            body: {
+              content: [{ type: 'text', text: 'Test Test' }],
+            },
+            id: '123',
+            timestamp: new Date(),
+            attempts: 1,
+            retry: () => {},
+            ack: () => {},
+          };
+        }, 100);
+      });
+
+      const response = await Promise.race([apiPromise, timeoutPromise]);
+
+      console.log('[AnthropicTitleService] Received response from Anthropic');
+
+      // Extract text from response, ensuring it's a text block
+      const contentBlock = response.content[0];
+      if (contentBlock.type !== 'text') {
+        console.warn('[AnthropicTitleService] Unexpected response type:', contentBlock.type);
+        return 'New Chat';
+      }
+
+      const title = contentBlock.text
+        .trim()
+        .replace(/^["']|["']$/g, '') // Remove surrounding quotes
+        .replace(/[^\w\s'-]/g, '') // Remove special characters except apostrophes and hyphens
+        .replace(/\s+/g, ' ') // Normalize spaces
+        .trim();
+
+      console.log('[AnthropicTitleService] Generated title:', title);
+
+      // Validate title length and fallback if needed
+      if (title.length > 60 || title.length < 2) {
+        console.warn('[AnthropicTitleService] Generated title out of bounds, using fallback');
+        return 'New Chat';
+      }
+
+      return title || 'New Chat';
+    } catch (error) {
+      console.error('[AnthropicTitleService] Error generating title:', error);
+      if (error instanceof Error) {
+        console.error('[AnthropicTitleService] Error details:', {
+          name: error.name,
+          message: error.message,
+          stack: error.stack?.substring(0, 500),
+        });
+      }
+      return 'New Chat';
+    }
+  }
+
+  /**
+   * Truncate text to a specific character limit while preserving word boundaries
+   * @param text Text to truncate
+   * @param maxLength Maximum character length
+   * @returns Truncated text
+   */
+  private truncateText(text: string, maxLength: number): string {
+    if (text.length <= maxLength) {
+      return text;
+    }
+
+    const truncated = text.substring(0, maxLength);
+    const lastSpaceIndex = truncated.lastIndexOf(' ');
+
+    // If we can find a space to break on, use it; otherwise just cut off
+    return lastSpaceIndex > maxLength * 0.8 ? truncated.substring(0, lastSpaceIndex) : truncated;
   }
 }

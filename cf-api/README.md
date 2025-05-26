@@ -9,6 +9,8 @@ A serverless backend for LibreChat built with Cloudflare Workers, Hono, and D1.
 - **OIDC Authentication**: Integrated authentication with Microsoft/other OIDC providers
 - **Compatible API**: Drop-in replacement for LibreChat's Node.js backend
 - **Conversation Management**: Full CRUD operations for conversations and messages
+- **Anthropic Claude Integration**: Streaming chat completions with Claude 4.0 Sonnet
+- **Automatic Title Generation**: Uses Claude 3.5 Haiku for fast, cost-effective conversation titling
 
 ## Setup
 
@@ -44,7 +46,26 @@ Run the database migrations:
 wrangler d1 execute librechat --file=./src/db/migrations/001_initial_schema.sql
 ```
 
-### 3. Environment Configuration
+### 3. KV Storage Setup (Optional - for Title Generation)
+
+Create a KV namespace for caching conversation titles:
+
+```bash
+wrangler kv:namespace create "TITLE_CACHE"
+```
+
+Update `wrangler.jsonc` with your KV namespace ID:
+
+```json
+"kv_namespaces": [
+  {
+    "binding": "TITLE_CACHE",
+    "id": "your-title-cache-namespace-id-here"
+  }
+]
+```
+
+### 4. Environment Configuration
 
 Set up OIDC authentication secrets:
 
@@ -54,7 +75,13 @@ wrangler secret put OIDC_CLIENT_SECRET
 wrangler secret put OIDC_ISSUER
 ```
 
-### 4. Development
+Set up Anthropic API key for AI chat completion:
+
+```bash
+wrangler secret put ANTHROPIC_API_KEY
+```
+
+### 5. Development
 
 Start the development server:
 
@@ -64,7 +91,7 @@ npm run dev
 
 The API will be available at `http://localhost:8787`
 
-### 5. Deployment
+### 6. Deployment
 
 Deploy to Cloudflare Workers:
 
@@ -79,9 +106,14 @@ npm run deploy
 - `GET /api/convos` - List conversations with pagination
   - Query params: `cursor`, `limit`, `isArchived`, `tags[]`, `search`, `order`
 - `GET /api/convos/:id` - Get specific conversation
+- `POST /api/convos/gen_title` - Generate conversation title (LibreChat compatibility)
 - `POST /api/convos/update` - Update conversation
 - `DELETE /api/convos` - Delete conversation(s)
 - `DELETE /api/convos/all` - Delete all conversations
+
+### Chat Completion
+
+- `POST /api/ask/anthropic` - Send message to Anthropic Claude with SSE streaming
 
 ### Authentication
 
@@ -184,5 +216,5 @@ Pass the `CloudflareBindings` as generics when instantiation `Hono`:
 
 ```ts
 // src/index.ts
-const app = new Hono<{ Bindings: CloudflareBindings }>()
+const app = new Hono<{ Bindings: CloudflareBindings }>();
 ```

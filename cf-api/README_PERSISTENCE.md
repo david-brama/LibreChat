@@ -83,7 +83,7 @@ const userMessagePromise = messageRepository.create(userMessageData);
 // Anthropic API call proceeds independently of database operations
 const anthropic = new Anthropic({ apiKey: c.env.ANTHROPIC_API_KEY });
 const message = await anthropic.messages.create({
-  model: 'claude-3-5-sonnet-20241022',
+  model: 'claude-sonnet-4-20250514',
   max_tokens: 4096,
   messages: [{ role: 'user', content: text }],
 });
@@ -215,11 +215,7 @@ async function streamAnthropic(c: Context) {
 
 ```typescript
 // Atomic operations for critical paths
-await c.env.DB.batch([
-  conversationInsert,
-  userMessageInsert,
-  responseMessageInsert
-]);
+await c.env.DB.batch([conversationInsert, userMessageInsert, responseMessageInsert]);
 ```
 
 ### Caching Layer

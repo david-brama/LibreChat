@@ -180,31 +180,35 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
             messageRepository.create(responseMessageData).catch((error) => {
               console.error('[askAnthropic] Error saving response message:', error);
             });
-
-            // Generate title for new conversations (async, non-blocking)
-            if (shouldGenerateTitle) {
-              console.log(
-                '[askAnthropic] Triggering title generation for conversation:',
-                conversationId,
-              );
-              generateConversationTitle(
-                c.env.ANTHROPIC_API_KEY,
-                oidcUser.sub,
-                conversationId!,
-                text,
-                responseText,
-                conversationRepository,
-                c.env as any,
-              ).catch((error) => {
-                console.error('[askAnthropic] Error generating title:', error);
-              });
-            } else {
-              console.log(
-                '[askAnthropic] Skipping title generation - not a new conversation or has parent message',
-              );
-            }
           },
         });
+
+        // Generate title for new conversations AFTER streaming but BEFORE returning
+        // This ensures title generation happens within the same request lifecycle
+        if (shouldGenerateTitle) {
+          console.log(
+            '[askAnthropic] Generating title for conversation (synchronously):',
+            conversationId,
+          );
+          try {
+            await generateConversationTitle(
+              c.env.ANTHROPIC_API_KEY,
+              oidcUser.sub,
+              conversationId!,
+              text,
+              responseText,
+              conversationRepository,
+              c.env as any,
+            );
+            console.log('[askAnthropic] Title generation completed successfully');
+          } catch (error) {
+            console.error('[askAnthropic] Error generating title:', error);
+          }
+        } else {
+          console.log(
+            '[askAnthropic] Skipping title generation - not a new conversation or has parent message',
+          );
+        }
 
         // Create final response message for the SSE final event
         const responseMessage = {

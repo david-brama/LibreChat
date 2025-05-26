@@ -226,31 +226,17 @@ Generate a title for this conversation:`;
         setTimeout(() => reject(new Error('Title generation timeout after 15 seconds')), 15000);
       });
 
-      // const apiPromise = this.anthropic.messages.create({
-      //   model: this.TITLE_MODEL,
-      //   max_tokens: 32,
-      //   temperature: 0.3,
-      //   system: systemPrompt,
-      //   messages: [
-      //     {
-      //       role: 'user',
-      //       content: userPrompt,
-      //     },
-      //   ],
-      // });
-      const apiPromise = new Promise((resolve) => {
-        setTimeout(() => {
-          const respones: Message = {
-            body: {
-              content: [{ type: 'text', text: 'Test Test' }],
-            },
-            id: '123',
-            timestamp: new Date(),
-            attempts: 1,
-            retry: () => {},
-            ack: () => {},
-          };
-        }, 100);
+      const apiPromise = this.anthropic.messages.create({
+        model: this.TITLE_MODEL,
+        max_tokens: 32,
+        temperature: 0.3,
+        system: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: userPrompt,
+          },
+        ],
       });
 
       const response = await Promise.race([apiPromise, timeoutPromise]);

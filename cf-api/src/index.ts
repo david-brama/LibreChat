@@ -6,6 +6,7 @@ import {
   OidcAuth,
   IDToken,
   TokenEndpointResponses,
+  initOidcAuthMiddleware,
 } from '@hono/oidc-auth';
 import api from './api';
 

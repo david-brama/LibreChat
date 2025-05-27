@@ -3,8 +3,10 @@ import { getAuth } from '@hono/oidc-auth';
 import { streamSSE } from 'hono/streaming';
 import { ConversationRepository } from '../../db/repositories/conversation';
 import { MessageRepository } from '../../db/repositories/message';
-import { AnthropicStreamingService, AnthropicTitleService } from '../../models/anthropic-streaming';
-import { AskRequest, StreamingMessage, CreateConversationDTO, CreateMessageDTO } from '../../types';
+import { AnthropicStreamingService } from '../../services/AnthropicStreamingService';
+import { AnthropicTitleService } from '../../services/AnthropicTitleService';
+import { SseService, SseCompletionResult } from '../../services/SseService';
+import { AskRequest, CreateConversationDTO, CreateMessageDTO } from '../../types';
 
 /**
  * Handler for POST /api/ask/anthropic
@@ -124,33 +126,14 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       conversationId,
     });
 
-    // Use Hono's streamSSE with shared service
+    // Use SSE Service for streaming
     return streamSSE(c, async (stream) => {
-      try {
-        // Send initial "created" event with user message (matches LibreChat format)
-        const initialCreatedEvent = {
-          message: {
-            messageId: userMessage.messageId,
-            parentMessageId: userMessage.parentMessageId || '00000000-0000-0000-0000-000000000000',
-            conversationId: conversationId,
-            sender: userMessage.sender,
-            text: userMessage.text,
-            isCreatedByUser: userMessage.isCreatedByUser,
-          },
-          created: true,
-        };
+      const sseService = new SseService();
+      const streamingService = new AnthropicStreamingService(c.env.ANTHROPIC_API_KEY);
 
-        await stream.writeSSE({
-          data: JSON.stringify(initialCreatedEvent),
-          event: 'message',
-        });
-
-        // Initialize streaming service
-        const streamingService = new AnthropicStreamingService(c.env.ANTHROPIC_API_KEY);
-
-        // Stream response using shared service
-        const { responseText, tokenCount } = await streamingService.streamResponse(stream, {
-          apiKey: c.env.ANTHROPIC_API_KEY,
+      await sseService.streamResponse(stream, {
+        streamingService,
+        streamingOptions: {
           messages: [
             {
               role: 'user',
@@ -161,119 +144,75 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
           responseMessageId,
           parentMessageId: messageId,
           conversationId,
-          // Save response message after streaming completes
-          onComplete: async (responseText: string, tokenCount: number) => {
-            const responseMessageData: CreateMessageDTO = {
-              messageId: responseMessageId,
-              conversationId: conversationId!,
-              parentMessageId: messageId,
-              userId: oidcUser.sub,
-              sender: 'assistant',
-              text: responseText,
-              isCreatedByUser: false,
-              model: model || 'claude-sonnet-4-20250514',
-              error: false,
-              tokenCount,
-            };
-
-            // Save to database (non-blocking)
-            messageRepository.create(responseMessageData).catch((error) => {
-              console.error('[askAnthropic] Error saving response message:', error);
-            });
-          },
-        });
-
-        // Generate title for new conversations AFTER streaming but BEFORE returning
-        // This ensures title generation happens within the same request lifecycle
-        if (shouldGenerateTitle) {
-          console.log(
-            '[askAnthropic] Generating title for conversation (synchronously):',
-            conversationId,
-          );
-          try {
-            await generateConversationTitle(
-              c.env.ANTHROPIC_API_KEY,
-              oidcUser.sub,
-              conversationId!,
-              text,
-              responseText,
-              conversationRepository,
-              c.env as any,
-            );
-            console.log('[askAnthropic] Title generation completed successfully');
-          } catch (error) {
-            console.error('[askAnthropic] Error generating title:', error);
-          }
-        } else {
-          console.log(
-            '[askAnthropic] Skipping title generation - not a new conversation or has parent message',
-          );
-        }
-
-        // Create final response message for the SSE final event
-        const responseMessage = {
+        },
+        userMessage: {
+          messageId: userMessage.messageId,
+          parentMessageId: userMessage.parentMessageId,
+          conversationId: conversationId!,
+          sender: userMessage.sender,
+          text: userMessage.text,
+          isCreatedByUser: userMessage.isCreatedByUser,
+        },
+        responseMessage: {
           messageId: responseMessageId,
-          conversationId,
-          parentMessageId: messageId,
-          isCreatedByUser: false,
           model: model || 'claude-sonnet-4-20250514',
-          sender: model || 'claude-sonnet-4-20250514',
-          promptTokens: 0, // TODO: Calculate actual prompt tokens
-          iconURL: 'anthropic',
-          endpoint: 'anthropic',
-          finish_reason: 'stop',
-          text: responseText,
-          tokenCount,
-        };
+          endpoint: endpoint || 'anthropic',
+        },
+        conversation: conversation
+          ? {
+              ...conversation,
+              user: oidcUser.sub,
+            }
+          : null,
+        // Handle completion events (persistence, title generation)
+        onComplete: async (result: SseCompletionResult) => {
+          // Save response message to database
+          const responseMessageData: CreateMessageDTO = {
+            messageId: result.responseMessage.messageId,
+            conversationId: conversationId!,
+            parentMessageId: messageId,
+            userId: oidcUser.sub,
+            sender: 'assistant',
+            text: result.responseText,
+            isCreatedByUser: false,
+            model: result.responseMessage.model,
+            error: false,
+            tokenCount: result.tokenCount,
+          };
 
-        // Send final response (matches LibreChat format)
-        const finalResponse = {
-          final: true,
-          conversation: conversation || {
-            _id: conversationId, // MongoDB-style ID for compatibility
-            conversationId,
-            user: oidcUser.sub,
-            __v: 0,
-            createdAt: new Date().toISOString(),
-            endpoint: endpoint || 'anthropic',
-            expiredAt: null,
-            files: [],
-            frequency_penalty: 0.1,
-            iconURL: 'anthropic',
-            isArchived: false,
-            messages: [userMessage.messageId, responseMessageId],
-            model: model || 'claude-sonnet-4-20250514',
-            modelLabel: model || 'Claude 3.5 Sonnet',
-            presence_penalty: 0.1,
-            resendFiles: true,
-            spec: 'anthropic',
-            tags: [],
-            temperature: 0.2,
-            title: conversation?.title || 'New Chat',
-            top_p: 0.85,
-            updatedAt: new Date().toISOString(),
-          },
-          title: conversation?.title || 'New Chat',
-          requestMessage: {
-            messageId: userMessage.messageId,
-            parentMessageId: userMessage.parentMessageId || '00000000-0000-0000-0000-000000000000',
-            conversationId,
-            sender: userMessage.sender,
-            text: userMessage.text,
-            isCreatedByUser: userMessage.isCreatedByUser,
-            tokenCount: 0, // TODO: Calculate actual token count for user message
-          },
-          responseMessage,
-        };
+          try {
+            await messageRepository.create(responseMessageData);
+            console.log('[askAnthropic] Response message saved successfully');
+          } catch (error) {
+            console.error('[askAnthropic] Error saving response message:', error);
+          }
 
-        await stream.writeSSE({
-          data: JSON.stringify(finalResponse),
-          event: 'message',
-        });
-      } catch (error) {
-        console.error('[askAnthropic] Error in streaming:', error);
-        // Error already sent by streaming service
-      }
+          // Generate title for new conversations
+          if (shouldGenerateTitle) {
+            console.log(
+              '[askAnthropic] Generating title for conversation (synchronously):',
+              conversationId,
+            );
+            try {
+              await generateConversationTitle(
+                c.env.ANTHROPIC_API_KEY,
+                oidcUser.sub,
+                conversationId!,
+                text,
+                result.responseText,
+                conversationRepository,
+                c.env as any,
+              );
+              console.log('[askAnthropic] Title generation completed successfully');
+            } catch (error) {
+              console.error('[askAnthropic] Error generating title:', error);
+            }
+          }
+        },
+        onError: async (error: Error) => {
+          console.error('[askAnthropic] Error in SSE streaming:', error);
+        },
+      });
     });
   } catch (error) {
     console.error('[askAnthropic] Error processing request:', error);

@@ -3,7 +3,8 @@ import { getAuth } from '@hono/oidc-auth';
 import { streamSSE } from 'hono/streaming';
 import { MessageRepository } from '../../db/repositories/message';
 import { ConversationRepository } from '../../db/repositories/conversation';
-import { AnthropicStreamingService } from '../../models/anthropic-streaming';
+import { AnthropicStreamingService } from '../../services/AnthropicStreamingService';
+import { SseService, SseCompletionResult } from '../../services/SseService';
 import { StreamingMessage, CreateMessageDTO, Message } from '../../types';
 
 const edit = new Hono<{ Bindings: CloudflareBindings }>();
@@ -85,7 +86,7 @@ edit.post('/anthropic', async (c) => {
 
       // The user message to edit is the parent of the assistant message
       userMessageToEdit = messages.find(
-        (msg) => msg.messageId === assistantMessageToUpdate.parentMessageId,
+        (msg) => msg.messageId === assistantMessageToUpdate!.parentMessageId,
       );
 
       if (!userMessageToEdit) {
@@ -130,7 +131,7 @@ edit.post('/anthropic', async (c) => {
     }
 
     // If editing an assistant message only (no regeneration needed)
-    if (responseMessageId && !userMessageToEdit.isCreatedByUser) {
+    if (responseMessageId && userMessageToEdit && !userMessageToEdit.isCreatedByUser) {
       return c.json(updatedMessage);
     }
 
@@ -163,86 +164,98 @@ edit.post('/anthropic', async (c) => {
       contextLength: conversationMessages.length,
     });
 
-    // Use Hono's streamSSE with shared service
+    // Use SSE Service for streaming
     return streamSSE(c, async (stream) => {
-      try {
-        // Initialize streaming service
-        const streamingService = new AnthropicStreamingService(c.env.ANTHROPIC_API_KEY);
+      const sseService = new SseService();
+      const streamingService = new AnthropicStreamingService(c.env.ANTHROPIC_API_KEY);
 
-        // Stream response using shared service
-        const { responseText, tokenCount } = await streamingService.streamResponse(stream, {
-          apiKey: c.env.ANTHROPIC_API_KEY,
+      await sseService.streamResponse(stream, {
+        streamingService,
+        streamingOptions: {
           messages: conversationMessages,
           responseMessageId: responseMessageIdToUse,
           parentMessageId: messageIdToEdit,
           conversationId,
-          // Save or update response message after streaming completes
-          onComplete: async (responseText: string, tokenCount: number) => {
-            const responseMessageData: CreateMessageDTO = {
-              messageId: responseMessageIdToUse,
-              conversationId,
-              parentMessageId: messageIdToEdit,
-              userId: oidcUser.sub,
-              sender: 'assistant',
-              text: responseText,
-              isCreatedByUser: false,
-              model: 'claude-sonnet-4-20250514',
-              error: false,
-              tokenCount,
-            };
+        },
+        userMessage: {
+          messageId: messageIdToEdit,
+          parentMessageId: updatedMessage?.parentMessageId || null,
+          conversationId,
+          sender: updatedMessage?.sender || 'user',
+          text: updatedMessage?.text || text,
+          isCreatedByUser: true,
+        },
+        responseMessage: {
+          messageId: responseMessageIdToUse,
+          model: 'claude-sonnet-4-20250514',
+          endpoint: 'anthropic',
+        },
+        conversation: {
+          ...conversation,
+          user: oidcUser.sub,
+        },
+        // Custom final response builder for edit endpoint
+        customFinalResponseBuilder: (result: SseCompletionResult) => ({
+          requestMessage: updatedMessage,
+          responseMessage: {
+            messageId: responseMessageIdToUse,
+            conversationId,
+            parentMessageId: messageIdToEdit,
+            user: oidcUser.sub,
+            sender: 'assistant',
+            text: result.responseText,
+            isCreatedByUser: false,
+            model: 'claude-sonnet-4-20250514',
+            error: false,
+            tokenCount: result.tokenCount,
+            createdAt: assistantMessageToUpdate?.createdAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        }),
+        // Handle completion events (persistence)
+        onComplete: async (result: SseCompletionResult) => {
+          const responseMessageData: CreateMessageDTO = {
+            messageId: responseMessageIdToUse,
+            conversationId,
+            parentMessageId: messageIdToEdit,
+            userId: oidcUser.sub,
+            sender: 'assistant',
+            text: result.responseText,
+            isCreatedByUser: false,
+            model: 'claude-sonnet-4-20250514',
+            error: false,
+            tokenCount: result.tokenCount,
+          };
 
+          try {
             if (isUpdatingExistingAssistant) {
               // Update existing assistant message
               await messageRepository.update(responseMessageIdToUse, oidcUser.sub, {
-                text: responseText,
-                tokenCount,
+                text: result.responseText,
+                tokenCount: result.tokenCount,
               });
+              console.log('[POST /api/edit/anthropic] Assistant message updated successfully');
             } else {
               // Create new assistant message
               await messageRepository.create(responseMessageData);
+              console.log('[POST /api/edit/anthropic] New assistant message created successfully');
             }
-          },
-        });
 
-        // Create final response message for the SSE final event
-        const responseMessage = {
-          messageId: responseMessageIdToUse,
-          conversationId,
-          parentMessageId: messageIdToEdit,
-          user: oidcUser.sub,
-          sender: 'assistant',
-          text: responseText,
-          isCreatedByUser: false,
-          model: 'claude-sonnet-4-20250514',
-          error: false,
-          tokenCount,
-          createdAt: assistantMessageToUpdate?.createdAt || new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-
-        // Send final response with both messages
-        const finalResponse: StreamingMessage = {
-          final: true,
-          conversation,
-          requestMessage: updatedMessage,
-          responseMessage,
-        };
-
-        await stream.writeSSE({
-          data: JSON.stringify(finalResponse),
-          event: 'message',
-        });
-
-        console.log('[POST /api/edit/anthropic] Edit and regeneration completed:', {
-          conversationId,
-          editedMessageId: messageIdToEdit,
-          responseMessageId: responseMessageIdToUse,
-          wasUpdate: isUpdatingExistingAssistant,
-        });
-      } catch (error) {
-        console.error('[POST /api/edit/anthropic] Error in streaming:', error);
-        // Error already sent by streaming service
-      }
+            console.log('[POST /api/edit/anthropic] Edit and regeneration completed:', {
+              conversationId,
+              editedMessageId: messageIdToEdit,
+              responseMessageId: responseMessageIdToUse,
+              wasUpdate: isUpdatingExistingAssistant,
+            });
+          } catch (error) {
+            console.error('[POST /api/edit/anthropic] Error saving response message:', error);
+            throw error;
+          }
+        },
+        onError: async (error: Error) => {
+          console.error('[POST /api/edit/anthropic] Error in SSE streaming:', error);
+        },
+      });
     });
   } catch (error) {
     console.error('[POST /api/edit/anthropic] Error:', error);

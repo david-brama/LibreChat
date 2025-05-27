@@ -301,3 +301,45 @@ export interface StreamingMessage {
   conversationId?: string;
   sender?: string;
 }
+
+/**
+ * Generalized streaming service interface for AI providers
+ * Defines the contract for any streaming AI service implementation
+ */
+export interface StreamingServiceOptions {
+  messages: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+  }>;
+  model?: string;
+  maxTokens?: number;
+  responseMessageId: string;
+  parentMessageId: string;
+  conversationId: string | null;
+}
+
+/**
+ * Return type for streaming service responses
+ */
+export interface StreamingServiceResponse {
+  responseText: string;
+  tokenCount: number;
+}
+
+/**
+ * Base interface for AI streaming services
+ * Provides a standardized way to stream responses from different AI providers
+ * while maintaining LibreChat frontend compatibility
+ */
+export interface IStreamingService {
+  /**
+   * Stream a response from the AI provider and send SSE events in LibreChat format
+   * @param stream Hono SSE stream instance for sending real-time updates
+   * @param options Streaming configuration options including messages, model, and callbacks
+   * @returns Promise containing the complete response text and token count
+   */
+  streamResponse(
+    stream: import('hono/streaming').SSEStreamingApi,
+    options: StreamingServiceOptions,
+  ): Promise<StreamingServiceResponse>;
+}

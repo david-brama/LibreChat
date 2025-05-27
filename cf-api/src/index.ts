@@ -19,6 +19,10 @@ declare module 'hono' {
   }
 }
 
+app.get('/health', (c) => {
+  return c.text('OK', 200);
+});
+
 const oidcClaimsHook = async (
   orig: OidcAuth | undefined,
   claims: IDToken | undefined,
@@ -51,5 +55,9 @@ app.get('/callback', async (c) => {
 });
 
 app.route('/api', api);
+
+app.get('*', (c) => {
+  return c.env.ASSETS.fetch(c.req.raw);
+});
 
 export default app;

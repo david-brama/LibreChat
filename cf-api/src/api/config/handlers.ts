@@ -12,7 +12,7 @@ import { TStartupConfig } from 'librechat-data-provider';
 export async function getConfig(c: Context) {
   try {
     const config: TStartupConfig = {
-      appTitle: 'My App',
+      appTitle: c.env.APP_TITLE || 'My App',
       socialLogins: ['openid'],
       discordLoginEnabled: false,
       facebookLoginEnabled: false,
@@ -20,17 +20,17 @@ export async function getConfig(c: Context) {
       googleLoginEnabled: false,
       openidLoginEnabled: true,
       appleLoginEnabled: false,
-      openidLabel: 'Continue with Microsoft',
-      openidImageUrl: '',
+      openidLabel: c.env.OPENID_LABEL || 'Continue with Microsoft',
+      openidImageUrl: c.env.OPENID_IMAGE_URL || '',
       openidAutoRedirect: false,
-      serverDomain: 'http://localhost:5173',
+      serverDomain: c.env.SERVER_DOMAIN || 'http://localhost:5173',
       emailLoginEnabled: false,
       registrationEnabled: false,
       socialLoginEnabled: true,
       passwordResetEnabled: false,
       emailEnabled: false,
       showBirthdayIcon: false,
-      helpAndFaqURL: '',
+      helpAndFaqURL: c.env.HELP_AND_FAQ_URL || '',
       sharedLinksEnabled: false,
       publicSharedLinksEnabled: false,
       instanceProjectId: '',
@@ -46,7 +46,7 @@ export async function getConfig(c: Context) {
         refillIntervalUnit: 'seconds',
         refillAmount: 0,
       },
-      customFooter: 'The cake is a lie.',
+      customFooter: c.env.CUSTOM_FOOTER || 'The cake is a lie.',
     };
 
     return c.json(config);

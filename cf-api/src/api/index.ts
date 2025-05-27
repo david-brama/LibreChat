@@ -13,6 +13,7 @@ import config from './config';
 import banner from './banner';
 import auth from './auth';
 import adminModels from './admin/models';
+import files from './files';
 
 const api = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -23,6 +24,28 @@ api.use('/:resource/*', (c, next) => {
     return next();
   }
   return oidcAuthMiddleware()(c, next);
+});
+
+api.get('/user', async (c) => {
+  const oidcUser = await getAuth(c);
+  if (!oidcUser) {
+    return c.json(null);
+  }
+  return c.json({
+    id: oidcUser.sub,
+    _id: oidcUser.sub,
+    openidId: oidcUser.sub,
+    name: oidcUser.name,
+    email: oidcUser.email,
+    username: oidcUser.email,
+    emailVerified: true,
+    provider: 'openid',
+    role: (oidcUser.groups as string[]).includes(c.env.ADMIN_GROUPID as string) ? 'ADMIN' : 'USER',
+    plugins: [],
+    groups: oidcUser.groups,
+    createdAt: oidcUser.createdAt,
+    updatedAt: oidcUser.updatedAt,
+  });
 });
 
 // Mount config routes
@@ -60,6 +83,8 @@ api.route('/agents', agents);
 
 // Mount edit routes for message editing and conversation regeneration
 api.route('/edit', edit);
+
+api.route('/files', files);
 
 api.use('/admin/*', async (c, next) => {
   const oidcUser = await getAuth(c);

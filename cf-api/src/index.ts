@@ -1,13 +1,13 @@
 import { Hono, OidcAuthClaims } from 'hono';
 import {
-  oidcAuthMiddleware,
   revokeSession,
   processOAuthCallback,
   OidcAuth,
   IDToken,
   TokenEndpointResponses,
-  initOidcAuthMiddleware,
+  oidcAuthMiddleware,
 } from '@hono/oidc-auth';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import api from './api';
 
 const app = new Hono<{ Bindings: CloudflareBindings }>();
@@ -30,19 +30,24 @@ const oidcClaimsHook = async (
   };
 };
 
+app.use('/oauth/openid', (c, next) => {
+  const referer = c.req.header('referer');
+  setCookie(c, 'referer', referer ?? '/');
+  return oidcAuthMiddleware()(c, next);
+});
 app.get('/logout', async (c) => {
   await revokeSession(c);
-  c.env.ANTHROPIC_API_KEY;
   return c.text('Logged out', 200);
 });
 
 app.get('/callback', async (c) => {
   c.set('oidcClaimsHook', oidcClaimsHook);
   await processOAuthCallback(c);
-  return c.redirect('/');
+  const referer = getCookie(c, 'referer');
+  deleteCookie(c, 'referer');
+  return c.redirect(referer ?? '/');
 });
 
-app.use('/api/*', oidcAuthMiddleware());
 app.route('/api', api);
 
 export default app;

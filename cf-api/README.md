@@ -117,8 +117,8 @@ npm run deploy
 
 ### Authentication
 
-- `GET /api/user` - Get current user info
 - `POST /api/auth/refresh` - Refresh authentication token
+- `POST /api/auth/logout` - Logout user
 - `GET /logout` - Logout user
 - `GET /callback` - OIDC callback handler
 

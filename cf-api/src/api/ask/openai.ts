@@ -1,0 +1,267 @@
+import { Context } from 'hono';
+import { getAuth } from '@hono/oidc-auth';
+import { streamSSE } from 'hono/streaming';
+import { ConversationRepository } from '../../db/repositories/conversation';
+import { MessageRepository } from '../../db/repositories/message';
+import { OpenAIStreamingService } from '../../services/OpenAIStreamingService';
+import { OpenAITitleService } from '../../services/OpenAITitleService';
+import { SseService, SseCompletionResult } from '../../services/SseService';
+import { AskRequest, CreateConversationDTO, CreateMessageDTO } from '../../types';
+
+/**
+ * Handler for POST /api/ask/openai
+ * Processes chat completion requests with OpenAI's GPT model using the shared streaming service
+ * Returns streaming Server-Sent Events (SSE) responses compatible with LibreChat
+ * Includes automatic title generation for new conversations
+ */
+export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
+  try {
+    // Get authenticated user
+    const oidcUser = await getAuth(c);
+    if (!oidcUser) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    // Check if OpenAI API key is available
+    if (!c.env.OPENAI_API_KEY) {
+      console.error('[askOpenAI] OPENAI_API_KEY not configured');
+      return c.json({ error: 'OpenAI API key not configured' }, 500);
+    }
+
+    // Parse request body
+    const requestData: AskRequest = await c.req.json();
+    const {
+      text,
+      conversationId: requestConversationId,
+      parentMessageId,
+      messageId,
+      endpoint,
+      model,
+    } = requestData;
+
+    console.log('[askOpenAI] Processing request:', {
+      userId: oidcUser.sub,
+      conversationId: requestConversationId,
+      messageLength: text.length,
+      model,
+    });
+
+    // Initialize repositories
+    const conversationRepository = new ConversationRepository(c.env.DB);
+    const messageRepository = new MessageRepository(c.env.DB);
+
+    // Handle conversation creation/retrieval
+    let conversationId = requestConversationId;
+    let conversationPromise: Promise<any>;
+    let isNewConversation = false;
+
+    if (!conversationId || conversationId === 'null') {
+      // Generate new conversation ID
+      conversationId = crypto.randomUUID();
+      isNewConversation = true;
+
+      const createConvoData: CreateConversationDTO = {
+        conversationId,
+        userId: oidcUser.sub,
+        title: 'New Chat',
+        endpoint,
+        model,
+      };
+
+      conversationPromise = conversationRepository.create(createConvoData);
+      console.log('[askOpenAI] Creating new conversation:', conversationId);
+    } else {
+      conversationPromise = conversationRepository.findByIdAndUser(conversationId, oidcUser.sub);
+    }
+
+    // Create user message immediately (following LibreChat pattern)
+    const userMessage = {
+      messageId,
+      conversationId,
+      parentMessageId:
+        parentMessageId === '00000000-0000-0000-0000-000000000000' ? null : parentMessageId,
+      user: oidcUser.sub,
+      sender: 'User',
+      text,
+      isCreatedByUser: true,
+      model,
+      error: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Save user message immediately (async)
+    const userMessageData: CreateMessageDTO = {
+      messageId: userMessage.messageId,
+      conversationId,
+      parentMessageId: userMessage.parentMessageId || undefined,
+      userId: oidcUser.sub,
+      sender: userMessage.sender,
+      text: userMessage.text,
+      isCreatedByUser: true,
+      model,
+      error: false,
+    };
+
+    const userMessagePromise = messageRepository.create(userMessageData);
+
+    // Generate response message ID
+    const responseMessageId = crypto.randomUUID();
+
+    // Start database operations (non-blocking)
+    const [conversation, savedUserMessage] = await Promise.all([
+      conversationPromise,
+      userMessagePromise,
+    ]);
+
+    // Check if this is the first message for title generation
+    const shouldGenerateTitle =
+      isNewConversation &&
+      (!parentMessageId || parentMessageId === '00000000-0000-0000-0000-000000000000');
+
+    console.log('[askOpenAI] Title generation check:', {
+      isNewConversation,
+      parentMessageId,
+      shouldGenerateTitle,
+      conversationId,
+    });
+
+    // Use SSE Service for streaming
+    return streamSSE(c, async (stream) => {
+      const sseService = new SseService();
+      const streamingService = new OpenAIStreamingService(c.env.OPENAI_API_KEY);
+
+      await sseService.streamResponse(stream, {
+        streamingService,
+        streamingOptions: {
+          messages: [
+            {
+              role: 'user',
+              content: text,
+            },
+          ],
+          model,
+          responseMessageId,
+          parentMessageId: messageId,
+          conversationId,
+        },
+        userMessage: {
+          messageId: userMessage.messageId,
+          parentMessageId: userMessage.parentMessageId,
+          conversationId: conversationId!,
+          sender: userMessage.sender,
+          text: userMessage.text,
+          isCreatedByUser: userMessage.isCreatedByUser,
+        },
+        responseMessage: {
+          messageId: responseMessageId,
+          model: model || 'gpt-4.1',
+          endpoint: endpoint || 'openAI',
+        },
+        conversation: conversation
+          ? {
+              ...conversation,
+              user: oidcUser.sub,
+            }
+          : null,
+        // Handle completion events (persistence, title generation)
+        onComplete: async (result: SseCompletionResult) => {
+          // Save response message to database
+          const responseMessageData: CreateMessageDTO = {
+            messageId: result.responseMessage.messageId,
+            conversationId: conversationId!,
+            parentMessageId: messageId,
+            userId: oidcUser.sub,
+            sender: 'assistant',
+            text: result.responseText,
+            isCreatedByUser: false,
+            model: result.responseMessage.model,
+            error: false,
+            tokenCount: result.tokenCount,
+          };
+
+          try {
+            await messageRepository.create(responseMessageData);
+            console.log('[askOpenAI] Response message saved successfully');
+          } catch (error) {
+            console.error('[askOpenAI] Error saving response message:', error);
+          }
+
+          // Generate title for new conversations
+          if (shouldGenerateTitle) {
+            console.log(
+              '[askOpenAI] Generating title for conversation (synchronously):',
+              conversationId,
+            );
+            try {
+              await generateConversationTitle(
+                c.env.OPENAI_API_KEY,
+                oidcUser.sub,
+                conversationId!,
+                text,
+                result.responseText,
+                conversationRepository,
+                c.env as any,
+              );
+              console.log('[askOpenAI] Title generation completed successfully');
+            } catch (error) {
+              console.error('[askOpenAI] Error generating title:', error);
+            }
+          }
+        },
+      });
+    });
+  } catch (error) {
+    console.error('[askOpenAI] Error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+}
+
+/**
+ * Generates a conversation title asynchronously and caches it for retrieval
+ * @param apiKey OpenAI API key
+ * @param userId User ID for cache key
+ * @param conversationId Conversation ID
+ * @param userText User's input text
+ * @param responseText AI's response text
+ * @param conversationRepo Repository for updating conversation
+ * @param env Environment bindings
+ */
+async function generateConversationTitle(
+  apiKey: string,
+  userId: string,
+  conversationId: string,
+  userText: string,
+  responseText: string,
+  conversationRepo: ConversationRepository,
+  env: any,
+): Promise<void> {
+  try {
+    console.log('[generateConversationTitle] Starting title generation for:', conversationId);
+
+    // Initialize title service
+    const titleService = new OpenAITitleService(apiKey);
+
+    // Generate title
+    const title = await titleService.generateTitle(userText, responseText);
+
+    console.log('[generateConversationTitle] Generated title:', title);
+
+    // Update conversation with new title
+    await conversationRepo.update(conversationId, userId, { title });
+
+    // Cache the title for frontend retrieval (matching LibreChat pattern)
+    const cacheKey = `title:${userId}:${conversationId}`;
+    const titleCache = env.TITLE_CACHE;
+
+    if (titleCache) {
+      // Cache for 2 minutes (120 seconds)
+      await titleCache.put(cacheKey, title, { expirationTtl: 120 });
+      console.log('[generateConversationTitle] Cached title with key:', cacheKey);
+    } else {
+      console.warn('[generateConversationTitle] TITLE_CACHE not configured - title not cached');
+    }
+  } catch (error) {
+    console.error('[generateConversationTitle] Error:', error);
+  }
+}

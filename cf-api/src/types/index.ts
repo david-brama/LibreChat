@@ -143,19 +143,21 @@ export interface EndpointConfig {
 
 /**
  * Endpoints configuration object
- * For MVP: only contains anthropic endpoint
+ * Supports both Anthropic and OpenAI endpoints
  */
 export interface EndpointsConfig {
-  anthropic: EndpointConfig;
+  anthropic?: EndpointConfig;
+  openAI?: EndpointConfig;
 }
 
 /**
  * Models configuration object
  * Maps endpoint names to arrays of available model names
- * For MVP: only contains anthropic with claude-sonnet-4-20250514
+ * Supports both Anthropic and OpenAI endpoints
  */
 export interface ModelsConfig {
-  anthropic: string[];
+  anthropic?: string[];
+  openAI?: string[];
 }
 
 // Conversation type now inferred from zod schema above
@@ -342,4 +344,75 @@ export interface IStreamingService {
     stream: import('hono/streaming').SSEStreamingApi,
     options: StreamingServiceOptions,
   ): Promise<StreamingServiceResponse>;
+}
+
+/**
+ * Model configuration interface
+ * Represents an AI model with its capabilities and pricing
+ */
+export interface Model {
+  id: number;
+  name: string;
+  modelId: string;
+  endpointType: 'openAI' | 'anthropic';
+  thinking: boolean;
+  contextWindow: number;
+  maxOutput: number;
+  knowledgeCutoff: string | null;
+  inputPricePerMtok: number;
+  outputPricePerMtok: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Database row type for models table
+ */
+export interface ModelRow {
+  id: number;
+  name: string;
+  model_id: string;
+  endpoint_type: string;
+  thinking: boolean;
+  context_window: number;
+  max_output: number;
+  knowledge_cutoff: string | null;
+  input_price_per_mtok: number;
+  output_price_per_mtok: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * DTO for creating a new model
+ */
+export interface CreateModelDTO {
+  name: string;
+  modelId: string;
+  endpointType: 'openAI' | 'anthropic';
+  thinking?: boolean;
+  contextWindow: number;
+  maxOutput: number;
+  knowledgeCutoff?: string;
+  inputPricePerMtok: number;
+  outputPricePerMtok: number;
+  isActive?: boolean;
+}
+
+/**
+ * DTO for updating an existing model
+ */
+export interface UpdateModelDTO {
+  name?: string;
+  modelId?: string;
+  endpointType?: 'openAI' | 'anthropic';
+  thinking?: boolean;
+  contextWindow?: number;
+  maxOutput?: number;
+  knowledgeCutoff?: string;
+  inputPricePerMtok?: number;
+  outputPricePerMtok?: number;
+  isActive?: boolean;
 }

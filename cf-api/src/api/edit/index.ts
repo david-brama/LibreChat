@@ -4,8 +4,10 @@ import { streamSSE } from 'hono/streaming';
 import { MessageRepository } from '../../db/repositories/message';
 import { ConversationRepository } from '../../db/repositories/conversation';
 import { AnthropicStreamingService } from '../../services/AnthropicStreamingService';
+import { OpenAIStreamingService } from '../../services/OpenAIStreamingService';
 import { SseService, SseCompletionResult } from '../../services/SseService';
-import { StreamingMessage, CreateMessageDTO, Message } from '../../types';
+import { StreamingMessage, CreateMessageDTO, Message, AskRequest } from '../../types';
+import { editOpenAI } from './openai';
 
 const edit = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -27,7 +29,7 @@ edit.post('/anthropic', async (c) => {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    const body = await c.req.json();
+    const body: AskRequest = await c.req.json();
     const {
       text,
       conversationId,
@@ -262,5 +264,8 @@ edit.post('/anthropic', async (c) => {
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
+
+// POST /api/edit/openAI - Edit message and regenerate with OpenAI
+edit.post('/openAI', editOpenAI);
 
 export default edit;

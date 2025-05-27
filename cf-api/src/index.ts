@@ -27,6 +27,8 @@ const oidcClaimsHook = async (
   return {
     name: (claims?.name as string) ?? orig?.name ?? '',
     sub: claims?.sub ?? orig?.sub ?? '',
+    exp: new Date().getTime() + 1000 * 60 * 60 * 24 * 14,
+    groups: claims?.groups ?? [],
   };
 };
 

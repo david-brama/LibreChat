@@ -266,7 +266,69 @@ const body = await c.req.json();
 const { conversationId } = body.arg || body; // Handle both structures
 ```
 
-### 5. Message Editing System
+### 5. OIDC Authentication & Login Flow
+
+**Problem**: Initial authentication setup was basic and didn't provide proper LibreChat frontend integration.
+
+**Solution**: Implemented comprehensive OIDC login flow with proper redirect handling:
+
+**Frontend Configuration**:
+
+```typescript
+// /api/config endpoint provides LibreChat-compatible configuration
+const config: TStartupConfig = {
+  appTitle: 'My App',
+  socialLogins: ['openid'],          // Enable OIDC login
+  openidLoginEnabled: true,
+  socialLoginEnabled: true,
+  openidLabel: 'Continue with Microsoft',
+  openidAutoRedirect: false,
+  serverDomain: 'http://localhost:5173',
+  // ... other LibreChat config fields
+};
+```
+
+**Referer Tracking for Post-Login Redirect**:
+
+```typescript
+// Capture original page before redirecting to login
+app.use('/oauth/openid', (c, next) => {
+  const referer = c.req.header('referer');
+  setCookie(c, 'referer', referer ?? '/');
+  return oidcAuthMiddleware()(c, next);
+});
+
+// Redirect back to original page after successful login
+app.get('/callback', async (c) => {
+  c.set('oidcClaimsHook', oidcClaimsHook);
+  await processOAuthCallback(c);
+  const referer = getCookie(c, 'referer');
+  deleteCookie(c, 'referer');
+  return c.redirect(referer ?? '/');
+});
+```
+
+**Selective Route Protection**:
+
+```typescript
+// Only protect API routes that need authentication
+api.use('/:resource/*', (c, next) => {
+  const resource = c.req.param('resource');
+  if (resource === 'config' || resource === 'banner' || resource === 'auth') {
+    return next(); // Allow public access to config/auth endpoints
+  }
+  return oidcAuthMiddleware()(c, next); // Protect everything else
+});
+```
+
+**Benefits**:
+
+- Seamless LibreChat frontend integration
+- Proper post-login redirect to original page
+- Public access to necessary configuration endpoints
+- Clean separation of protected vs public routes
+
+### 6. Message Editing System
 
 **Problem**: LibreChat's parameter naming is extremely confusing for edit requests.
 
@@ -311,9 +373,17 @@ let messageIdToEdit = responseMessageId || overrideParentMessageId || userMessag
 - `GET /api/agents/tools/web_search/auth` - Web search auth status
 - `GET /api/agents/tools/execute_code/auth` - Code execution auth status
 
+### Authentication
+
+- `POST /api/auth/refresh` - Refresh authentication token
+- `POST /api/auth/logout` - Logout user
+- `GET /logout` - Logout user
+- `GET /callback` - OIDC callback handler
+
 ### Configuration
 
-- `GET /api/config` - API configuration
+- `GET /api/config` - API configuration with LibreChat frontend compatibility
+- `GET /api/banner` - Application banner configuration
 - `GET /api/endpoints` - Available endpoints
 - `GET /api/models` - Available models
 
@@ -456,7 +526,8 @@ POST /api/edit/anthropic
 - Complete conversation persistence with D1 database
 - Message editing with proper in-place updates
 - Title generation using Claude 3.5 Haiku
-- User authentication with OIDC
+- **OIDC Authentication with proper login flow** - Seamless integration with LibreChat frontend, referer tracking for post-login redirects, selective route protection
+- **Modular API structure** - All endpoints organized into separate directories (config, banner, auth, conversations, etc.) following consistent patterns
 - Type-safe repository pattern
 - LibreChat frontend compatibility
 - Proper error handling and validation
@@ -541,5 +612,9 @@ npm run deploy  # Deploys to Cloudflare Workers
 4. **Repository Pattern Value**: Clean separation between database operations and business logic significantly improves maintainability
 
 5. **Type Safety**: Using Zod schemas with `z.infer<>` ensures compatibility with LibreChat's frontend expectations
+
+6. **OIDC Integration Complexity**: LibreChat frontend expects very specific configuration values and authentication flow. Key elements include proper social login configuration, balance settings, and referer tracking for seamless user experience.
+
+7. **API Structure Evolution**: Through refactoring, we've established a clean modular structure where each resource (config, banner, auth, conversations, etc.) follows the same pattern with separate `handlers.ts` and `index.ts` files, improving maintainability and consistency.
 
 This implementation successfully replicates LibreChat's core functionality on Cloudflare Workers while maintaining full frontend compatibility and providing a foundation for future enhancements.

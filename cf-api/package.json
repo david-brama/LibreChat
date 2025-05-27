@@ -1,21 +1,21 @@
 {
-	"name": "cf-api",
-	"scripts": {
-		"dev": "wrangler dev",
-		"deploy": "wrangler deploy --minify",
-		"cf-typegen": "wrangler types --env-interface CloudflareBindings"
-	},
-	"dependencies": {
-		"@anthropic-ai/sdk": "^0.52.0",
-		"@hono/oidc-auth": "^1.6.0",
-		"hono": "^4.7.10",
-		"librechat-data-provider": "file:../packages/data-provider",
-		"openai": "^4.103.0",
-		"zod": "^3.25.28"
-	},
-	"devDependencies": {
-		"@types/better-sqlite3": "^7.6.13",
-		"better-sqlite3": "^11.10.0",
-		"wrangler": "^4.16.1"
-	}
+  "name": "cf-api",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --minify",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@hono/oidc-auth": "^1.6.0",
+    "hono": "^4.7.10",
+    "librechat-data-provider": "file:../packages/data-provider",
+    "openai": "^4.103.0",
+    "zod": "^3.25.28"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^11.10.0",
+    "wrangler": "^4.16.1"
+  }
 }

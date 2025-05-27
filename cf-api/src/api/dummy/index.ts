@@ -18,14 +18,8 @@ const dummy = new Hono();
 // GET /api/balance - User balance (dummy)
 dummy.get('/balance', getBalance);
 
-// GET /api/files - User files (empty)
-dummy.get('/files', getFiles);
-
 // GET /api/search/enable - Search status (disabled)
 dummy.get('/search/enable', getSearchEnabled);
-
-// GET /api/files/config - File configuration (disabled)
-dummy.get('/files/config', getFileConfig);
 
 // GET /api/agents/tools/web_search/auth - Web search auth (disabled)
 dummy.get('/agents/tools/web_search/auth', getWebSearchAuth);

@@ -8,6 +8,7 @@ import {
   oidcAuthMiddleware,
 } from '@hono/oidc-auth';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
+
 import api from './api';
 
 const app = new Hono<{ Bindings: CloudflareBindings }>();
@@ -37,8 +38,6 @@ const oidcClaimsHook = async (
 };
 
 app.use('/oauth/openid', (c, next) => {
-  const referer = c.req.header('referer');
-  setCookie(c, 'referer', referer ?? '/');
   return oidcAuthMiddleware()(c, next);
 });
 app.get('/logout', async (c) => {
@@ -49,14 +48,29 @@ app.get('/logout', async (c) => {
 app.get('/callback', async (c) => {
   c.set('oidcClaimsHook', oidcClaimsHook);
   await processOAuthCallback(c);
-  const referer = getCookie(c, 'referer');
-  deleteCookie(c, 'referer');
-  return c.redirect(referer ?? '/');
+  return c.redirect('/');
 });
 
 app.route('/api', api);
 
-app.get('*', (c) => {
+// Fallback handler for static assets
+// Only serve static assets for routes that don't start with /api, /oauth, /callback, /logout, /health
+app.all('*', async (c) => {
+  const pathname = new URL(c.req.url).pathname;
+
+  // Don't serve static assets for API, OAuth, or other Worker-handled routes
+  if (
+    pathname.startsWith('/api') ||
+    pathname.startsWith('/oauth') ||
+    pathname === '/callback' ||
+    pathname === '/logout' ||
+    pathname === '/health'
+  ) {
+    // Return 404 for unmatched API/OAuth routes to avoid conflicts
+    return c.notFound();
+  }
+
+  // Use the ASSETS binding to serve static files
   return c.env.ASSETS.fetch(c.req.raw);
 });
 

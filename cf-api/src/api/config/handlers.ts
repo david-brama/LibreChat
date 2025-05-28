@@ -23,7 +23,7 @@ export async function getConfig(c: Context) {
       openidLabel: c.env.OPENID_LABEL || 'Continue with Microsoft',
       openidImageUrl: c.env.OPENID_IMAGE_URL || '',
       openidAutoRedirect: false,
-      serverDomain: c.env.SERVER_DOMAIN || 'http://localhost:5173',
+      serverDomain: c.env.SERVER_DOMAIN,
       emailLoginEnabled: false,
       registrationEnabled: false,
       socialLoginEnabled: true,

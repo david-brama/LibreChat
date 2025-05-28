@@ -86,11 +86,28 @@ export class AnthropicStreamingService implements IStreamingService {
         event: 'message',
       });
 
+      // Convert messages to Anthropic format with proper typing
+      const anthropicMessages: Anthropic.MessageParam[] = messages.map((msg) => {
+        if (typeof msg.content === 'string') {
+          // Simple text message
+          return {
+            role: msg.role,
+            content: msg.content,
+          };
+        } else {
+          // Complex content with images/mixed types
+          return {
+            role: msg.role,
+            content: msg.content as any, // Anthropic SDK will handle the content array
+          };
+        }
+      });
+
       // Start streaming from Anthropic
       const anthropicStream = await this.anthropic.messages.stream({
         model,
         max_tokens: maxTokens,
-        messages,
+        messages: anthropicMessages,
       });
 
       let responseText = '';

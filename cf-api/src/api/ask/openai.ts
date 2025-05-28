@@ -3,6 +3,8 @@ import { getAuth } from '@hono/oidc-auth';
 import { streamSSE } from 'hono/streaming';
 import { ConversationRepository } from '../../db/repositories/conversation';
 import { MessageRepository } from '../../db/repositories/message';
+import { FileRepository } from '../../db/repositories/fileRepository';
+import { R2ImageEncoder } from '../../services/files/r2ImageEncoder';
 import { OpenAIStreamingService } from '../../services/OpenAIStreamingService';
 import { OpenAITitleService } from '../../services/OpenAITitleService';
 import { SseService, SseCompletionResult } from '../../services/SseService';
@@ -15,7 +17,7 @@ const NO_PARENT = '00000000-0000-0000-0000-000000000000';
  * Handler for POST /api/ask/openai
  * Processes chat completion requests with OpenAI's GPT model using the shared streaming service
  * Returns streaming Server-Sent Events (SSE) responses compatible with LibreChat
- * Includes automatic title generation for new conversations
+ * Includes automatic title generation for new conversations and image support for vision models
  */
 export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
   try {
@@ -40,6 +42,7 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       messageId,
       endpoint,
       model,
+      files,
     } = requestData;
 
     console.log('[askOpenAI] Processing request:', {
@@ -47,11 +50,85 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       conversationId: requestConversationId,
       messageLength: text.length,
       model,
+      hasFiles: !!files?.length,
+      fileCount: files?.length || 0,
+      fileIds: files?.map((f) => f.file_id) || [],
     });
 
     // Initialize repositories
     const conversationRepository = new ConversationRepository(c.env.DB);
     const messageRepository = new MessageRepository(c.env.DB);
+    const fileRepository = new FileRepository(c.env.DB);
+
+    console.log('[askOpenAI] Repositories initialized');
+
+    // Initialize image encoder for file processing
+    const r2ImageEncoder = new R2ImageEncoder(c.env.R2_BUCKET, fileRepository);
+
+    console.log('[askOpenAI] R2ImageEncoder initialized');
+
+    // Process files if present
+    let imageContent: any[] = [];
+    let processedFiles: any[] = [];
+
+    if (files && files.length > 0) {
+      console.log(`[askOpenAI] Starting file processing for ${files.length} files`);
+      const fileIds = files.map((f) => f.file_id);
+
+      console.log('[askOpenAI] Calling r2ImageEncoder.encodeAndFormat with:', {
+        fileIds,
+        userId: oidcUser.sub,
+        endpoint: 'openAI',
+      });
+
+      try {
+        const fileProcessingResult = await r2ImageEncoder.encodeAndFormat(
+          fileIds,
+          oidcUser.sub,
+          'openAI', // endpoint for OpenAI formatting
+        );
+
+        console.log(`[askOpenAI] File processing completed successfully:`, {
+          hasImageUrls: fileProcessingResult.image_urls.length > 0,
+          imageUrlsCount: fileProcessingResult.image_urls.length,
+          hasText: !!fileProcessingResult.text,
+          textLength: fileProcessingResult.text?.length || 0,
+          filesCount: fileProcessingResult.files.length,
+        });
+
+        // Log detailed structure of each image URL
+        fileProcessingResult.image_urls.forEach((img, idx) => {
+          console.log(`[askOpenAI] Image ${idx} structure:`, {
+            type: img.type,
+            hasImageUrl: !!(img as any).image_url,
+            imageUrlKeys: (img as any).image_url ? Object.keys((img as any).image_url) : null,
+            imageUrlDetail: (img as any).image_url?.detail,
+            imageUrlLength: (img as any).image_url?.url ? (img as any).image_url.url.length : 0,
+            imageUrlPrefix: (img as any).image_url?.url
+              ? (img as any).image_url.url.substring(0, 50) + '...'
+              : null,
+          });
+        });
+
+        imageContent = fileProcessingResult.image_urls;
+        processedFiles = fileProcessingResult.files;
+
+        // Log any text content from files (documents)
+        if (fileProcessingResult.text) {
+          console.log('[askOpenAI] Text content extracted from files:', {
+            textLength: fileProcessingResult.text.length,
+            textPreview: fileProcessingResult.text.substring(0, 200) + '...',
+          });
+        }
+      } catch (error) {
+        console.error('[askOpenAI] Error during file processing:', error);
+        // Continue without images rather than failing
+        imageContent = [];
+        processedFiles = [];
+      }
+    } else {
+      console.log('[askOpenAI] No files to process');
+    }
 
     // Handle conversation creation/retrieval
     let conversationId = requestConversationId;
@@ -77,20 +154,56 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       conversationPromise = conversationRepository.findByIdAndUser(conversationId, oidcUser.sub);
     }
 
-    // Create user message immediately (following LibreChat pattern)
+    // Format user message content properly for OpenAI Vision API
+    // For OpenAI, when images are present, content must be an array with text + image objects
+    let userMessageContent: any;
+    if (imageContent.length > 0) {
+      // For vision models, create content array with text first, then images
+      userMessageContent = [{ type: 'text', text }, ...imageContent];
+      console.log(`[askOpenAI] Formatted vision message:`, {
+        imageCount: imageContent.length,
+        contentArrayLength: userMessageContent.length,
+        textPart: userMessageContent[0],
+        imageParts: userMessageContent.slice(1).map((img: any, idx: number) => ({
+          index: idx,
+          type: img.type,
+          hasImageUrl: !!img.image_url,
+          imageUrlDetail: img.image_url?.detail,
+        })),
+      });
+    } else {
+      // For text-only models, content is just a string
+      userMessageContent = text;
+      console.log(`[askOpenAI] Formatted text-only message:`, {
+        contentType: typeof userMessageContent,
+        contentLength: userMessageContent.length,
+      });
+    }
+
+    // Create the user message with proper content format
     const userMessage = {
       messageId,
       conversationId,
       parentMessageId: parentMessageId === NO_PARENT ? null : parentMessageId,
       user: oidcUser.sub,
       sender: 'User',
-      text,
+      text, // Original text for database storage
+      content: userMessageContent, // Formatted content for AI processing
       isCreatedByUser: true,
       model,
       error: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+
+    console.log('[askOpenAI] Created user message:', {
+      messageId: userMessage.messageId,
+      hasContent: !!userMessage.content,
+      contentType: Array.isArray(userMessage.content) ? 'array' : typeof userMessage.content,
+      contentLength: Array.isArray(userMessage.content)
+        ? userMessage.content.length
+        : userMessage.content?.length || 0,
+    });
 
     // Save user message immediately (async)
     const userMessageData: CreateMessageDTO = {
@@ -103,6 +216,7 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       isCreatedByUser: true,
       model,
       error: false,
+      fileIds: files?.map((f) => f.file_id),
     };
 
     const userMessagePromise = messageRepository.create(userMessageData);
@@ -128,7 +242,10 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
     });
 
     // Build conversation history for context
-    let conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    let conversationHistory: Array<{
+      role: 'user' | 'assistant';
+      content: string | Array<{ type: string; text?: string; image_url?: any }>;
+    }> = [];
 
     if (!isNewConversation && messageId && parentMessageId && parentMessageId !== NO_PARENT) {
       console.log('[askOpenAI] Building conversation history from message chain');
@@ -160,16 +277,65 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       console.log('[askOpenAI] New conversation or no parent - no history needed');
     }
 
-    // Add current user message to the conversation
-    conversationHistory.push({
-      role: 'user',
-      content: text,
+    // Add current user message to the conversation with images if present
+    if (imageContent.length > 0) {
+      conversationHistory.push({
+        role: 'user',
+        content: userMessage.content,
+      });
+
+      console.log('[askOpenAI] Added user message with images to conversation history:', {
+        contentParts: Array.isArray(userMessage.content) ? userMessage.content.length : 'N/A',
+        imageCount: imageContent.length,
+        conversationHistoryLength: conversationHistory.length,
+        lastMessageRole: conversationHistory[conversationHistory.length - 1]?.role,
+        lastMessageContentType: Array.isArray(
+          conversationHistory[conversationHistory.length - 1]?.content,
+        )
+          ? 'array'
+          : typeof conversationHistory[conversationHistory.length - 1]?.content,
+      });
+    } else {
+      conversationHistory.push({
+        role: 'user',
+        content: text,
+      });
+
+      console.log('[askOpenAI] Added text-only user message to conversation history:', {
+        conversationHistoryLength: conversationHistory.length,
+        lastMessageRole: conversationHistory[conversationHistory.length - 1]?.role,
+        lastMessageContentLength: text.length,
+      });
+    }
+
+    console.log('[askOpenAI] Final conversation history before streaming:', {
+      totalMessages: conversationHistory.length,
+      messageTypes: conversationHistory.map((msg, idx) => ({
+        index: idx,
+        role: msg.role,
+        contentType: Array.isArray(msg.content) ? 'array' : typeof msg.content,
+        contentLength: Array.isArray(msg.content)
+          ? msg.content.length
+          : (msg.content as string)?.length || 0,
+      })),
     });
 
     // Use SSE Service for streaming
     return streamSSE(c, async (stream) => {
+      console.log('[askOpenAI] Starting SSE stream with options:', {
+        model,
+        responseMessageId,
+        parentMessageId: messageId,
+        conversationId,
+        fileIds: files?.map((f) => f.file_id) || [],
+        userId: oidcUser.sub,
+        messagesCount: conversationHistory.length,
+      });
+
       const sseService = new SseService();
       const streamingService = new OpenAIStreamingService(c.env.OPENAI_API_KEY);
+
+      console.log('[askOpenAI] Created SSE service and OpenAI streaming service');
 
       await sseService.streamResponse(stream, {
         streamingService,
@@ -179,6 +345,8 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
           responseMessageId,
           parentMessageId: messageId,
           conversationId,
+          fileIds: files?.map((f) => f.file_id),
+          userId: oidcUser.sub,
         },
         userMessage: {
           messageId: userMessage.messageId,

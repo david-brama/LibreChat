@@ -86,16 +86,67 @@ export class OpenAIStreamingService implements IStreamingService {
         event: 'message',
       });
 
+      // Convert messages to OpenAI format with proper typing
+      const openaiMessages: OpenAI.ChatCompletionMessageParam[] = messages.map((msg, index) => {
+        if (typeof msg.content === 'string') {
+          // Simple text message
+          console.log(`[OpenAI Streaming] Message ${index}: text-only`, {
+            role: msg.role,
+            contentLength: msg.content.length,
+          });
+          return {
+            role: msg.role,
+            content: msg.content,
+          } as OpenAI.ChatCompletionMessageParam;
+        } else {
+          // Complex content with images/mixed types - already in correct OpenAI format
+          console.log(`[OpenAI Streaming] Message ${index}: complex content`, {
+            role: msg.role,
+            contentType: Array.isArray(msg.content) ? 'array' : typeof msg.content,
+            contentLength: Array.isArray(msg.content) ? msg.content.length : 'N/A',
+            contentStructure: Array.isArray(msg.content)
+              ? msg.content.map((item, i) => ({ index: i, type: (item as any).type }))
+              : 'N/A',
+          });
+          return {
+            role: msg.role,
+            content: msg.content, // Already formatted correctly for OpenAI vision
+          } as OpenAI.ChatCompletionMessageParam;
+        }
+      });
+
+      console.log(`[OpenAI Streaming] Sending ${openaiMessages.length} messages to OpenAI`, {
+        model,
+        visionRequest: openaiMessages.some((msg) => Array.isArray(msg.content)),
+        maxTokens,
+        detailedMessages: openaiMessages.map((msg, idx) => ({
+          index: idx,
+          role: msg.role,
+          contentType: Array.isArray(msg.content) ? 'array' : typeof msg.content,
+          contentDetails: Array.isArray(msg.content)
+            ? msg.content.map((item: any, i: number) => ({
+                index: i,
+                type: item.type,
+                hasText: !!item.text,
+                hasImageUrl: !!item.image_url,
+                textLength: item.text?.length || 0,
+                imageUrlDetail: item.image_url?.detail,
+                imageUrlLength: item.image_url?.url?.length || 0,
+              }))
+            : { textLength: (msg.content as string)?.length || 0 },
+        })),
+      });
+
       // Start streaming from OpenAI
+      console.log('[OpenAI Streaming] Making OpenAI API call...');
       const openaiStream = await this.openai.chat.completions.create({
         model,
         max_tokens: maxTokens,
-        messages: messages.map((msg) => ({
-          role: msg.role,
-          content: msg.content,
-        })),
+        messages: openaiMessages,
         stream: true,
       });
+
+      console.log('[OpenAI Streaming] OpenAI API call successful, starting to process stream...');
 
       let responseText = '';
       let tokenCount = 0;

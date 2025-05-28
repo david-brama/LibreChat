@@ -3,8 +3,10 @@ import { getAuth } from '@hono/oidc-auth';
 import { streamSSE } from 'hono/streaming';
 import { ConversationRepository } from '../../db/repositories/conversation';
 import { MessageRepository } from '../../db/repositories/message';
+import { FileRepository } from '../../db/repositories/fileRepository';
+import { R2ImageEncoder } from '../../services/files/r2ImageEncoder';
 import { AnthropicStreamingService } from '../../services/AnthropicStreamingService';
-import { AnthropicTitleService } from '../../services/AnthropicTitleService';
+import { OpenAITitleService } from '../../services/OpenAITitleService';
 import { SseService, SseCompletionResult } from '../../services/SseService';
 import { AskRequest, CreateConversationDTO, CreateMessageDTO } from '../../types';
 
@@ -13,9 +15,9 @@ const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 
 /**
  * Handler for POST /api/ask/anthropic
- * Processes chat completion requests with Anthropic's Claude model using the shared streaming service
+ * Processes chat completion requests with Anthropic's Claude model using the streaming service
  * Returns streaming Server-Sent Events (SSE) responses compatible with LibreChat
- * Includes automatic title generation for new conversations
+ * Includes automatic title generation for new conversations and image support for vision models
  */
 export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>) {
   try {
@@ -40,6 +42,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       messageId,
       endpoint,
       model,
+      files,
     } = requestData;
 
     console.log('[askAnthropic] Processing request:', {
@@ -47,11 +50,57 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       conversationId: requestConversationId,
       messageLength: text.length,
       model,
+      hasFiles: !!files?.length,
+      fileCount: files?.length || 0,
     });
 
     // Initialize repositories
     const conversationRepository = new ConversationRepository(c.env.DB);
     const messageRepository = new MessageRepository(c.env.DB);
+    const fileRepository = new FileRepository(c.env.DB);
+
+    // Initialize image encoder for file processing
+    const imageEncoder = new R2ImageEncoder(c.env.R2_BUCKET, fileRepository);
+
+    // Process files if present
+    let imageContent: any[] = [];
+    let processedFiles: any[] = [];
+
+    if (files && files.length > 0) {
+      console.log('[askAnthropic] Processing files for vision request:', {
+        fileIds: files.map((f) => f.file_id),
+      });
+
+      try {
+        const fileIds = files.map((f) => f.file_id);
+        const fileProcessingResult = await imageEncoder.encodeAndFormat(
+          fileIds,
+          oidcUser.sub,
+          'anthropic',
+        );
+
+        imageContent = fileProcessingResult.image_urls;
+        processedFiles = fileProcessingResult.files;
+
+        console.log('[askAnthropic] File processing completed:', {
+          imageCount: imageContent.length,
+          processedFileCount: processedFiles.length,
+          hasTextContent: !!fileProcessingResult.text,
+        });
+
+        // Log any text content from files (documents)
+        if (fileProcessingResult.text) {
+          console.log('[askAnthropic] Text content extracted from files:', {
+            textLength: fileProcessingResult.text.length,
+          });
+        }
+      } catch (error) {
+        console.error('[askAnthropic] Error processing files:', error);
+        // Continue without images rather than failing the request
+        imageContent = [];
+        processedFiles = [];
+      }
+    }
 
     // Handle conversation creation/retrieval
     let conversationId = requestConversationId;
@@ -103,6 +152,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       isCreatedByUser: true,
       model,
       error: false,
+      fileIds: files?.map((f) => f.file_id),
     };
 
     const userMessagePromise = messageRepository.create(userMessageData);
@@ -128,7 +178,10 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
     });
 
     // Build conversation history for context
-    let conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    let conversationHistory: Array<{
+      role: 'user' | 'assistant';
+      content: string | Array<{ type: string; text?: string; source?: any }>;
+    }> = [];
 
     if (!isNewConversation && messageId && parentMessageId && parentMessageId !== NO_PARENT) {
       console.log('[askAnthropic] Building conversation history from message chain');
@@ -138,7 +191,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
         const historyMessages = await messageRepository.getConversationHistory(
           conversationId,
           oidcUser.sub,
-          parentMessageId, // Use parentMessageId as the starting point, not messageId
+          parentMessageId, // Use parentMessageId as the starting point
         );
 
         // Convert to Anthropic format
@@ -160,11 +213,34 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       console.log('[askAnthropic] New conversation or no parent - no history needed');
     }
 
-    // Add current user message to the conversation
-    conversationHistory.push({
-      role: 'user',
-      content: text,
-    });
+    // Add current user message to the conversation with images if present
+    if (imageContent.length > 0) {
+      // For Anthropic, format message content as array with text and images
+      const messageContent: Array<{ type: string; text?: string; source?: any }> = [
+        { type: 'text', text },
+      ];
+
+      // Add images to the message content
+      messageContent.push(...imageContent);
+
+      conversationHistory.push({
+        role: 'user',
+        content: messageContent,
+      });
+
+      console.log('[askAnthropic] Added user message with images:', {
+        contentParts: messageContent.length,
+        imageCount: imageContent.length,
+      });
+    } else {
+      // Text-only message
+      conversationHistory.push({
+        role: 'user',
+        content: text,
+      });
+
+      console.log('[askAnthropic] Added text-only user message');
+    }
 
     // Use SSE Service for streaming
     return streamSSE(c, async (stream) => {
@@ -179,6 +255,8 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
           responseMessageId,
           parentMessageId: messageId,
           conversationId,
+          fileIds: files?.map((f) => f.file_id),
+          userId: oidcUser.sub,
         },
         userMessage: {
           messageId: userMessage.messageId,
@@ -190,7 +268,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
         },
         responseMessage: {
           messageId: responseMessageId,
-          model: model || 'claude-sonnet-4-20250514',
+          model: model || 'claude-3-sonnet',
           endpoint: endpoint || 'anthropic',
         },
         conversation: conversation
@@ -222,15 +300,15 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
             console.error('[askAnthropic] Error saving response message:', error);
           }
 
-          // Generate title for new conversations
-          if (shouldGenerateTitle) {
+          // Generate title for new conversations using OpenAI
+          if (shouldGenerateTitle && c.env.OPENAI_API_KEY) {
             console.log(
               '[askAnthropic] Generating title for conversation (synchronously):',
               conversationId,
             );
             try {
               await generateConversationTitle(
-                c.env.ANTHROPIC_API_KEY,
+                c.env.OPENAI_API_KEY,
                 oidcUser.sub,
                 conversationId!,
                 text,
@@ -244,13 +322,10 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
             }
           }
         },
-        onError: async (error: Error) => {
-          console.error('[askAnthropic] Error in SSE streaming:', error);
-        },
       });
     });
   } catch (error) {
-    console.error('[askAnthropic] Error processing request:', error);
+    console.error('[askAnthropic] Error:', error);
     return c.json({ error: 'Internal server error' }, 500);
   }
 }
@@ -278,7 +353,7 @@ async function generateConversationTitle(
     console.log('[generateConversationTitle] Starting title generation for:', conversationId);
 
     // Initialize title service
-    const titleService = new AnthropicTitleService(apiKey);
+    const titleService = new OpenAITitleService(apiKey);
 
     // Generate title
     const title = await titleService.generateTitle(userText, responseText);

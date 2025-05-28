@@ -50,21 +50,28 @@ class ConversationRepository {
   async create(data: CreateConversationDTO): Promise<Conversation>;
   async findByIdAndUser(id: string, userId: string): Promise<Conversation | null>;
   async findByUser(userId: string, options: FindOptions): Promise<Conversation[]>;
-  async update(id: string, userId: string, data: UpdateConversationDTO): Promise<Conversation | null>;
+  async update(
+    id: string,
+    userId: string,
+    data: UpdateConversationDTO,
+  ): Promise<Conversation | null>;
   async delete(id: string, userId: string): Promise<boolean>;
 }
 
 class ModelRepository {
   async create(data: CreateModelDTO): Promise<Model>;
   async findAll(): Promise<Model[]>;
-  async findAllActiveGrouped(): Promise<{anthropic: Model[]; openAI: Model[]}>;
+  async findAllActiveGrouped(): Promise<{ anthropic: Model[]; openAI: Model[] }>;
   async update(id: number, data: UpdateModelDTO): Promise<Model | null>;
   async delete(id: number): Promise<boolean>;
 }
 
 // Streaming Service Layer - Handles AI provider interactions
 interface IStreamingService {
-  streamResponse(stream: SSEStreamingApi, options: StreamingServiceOptions): Promise<StreamingServiceResponse>;
+  streamResponse(
+    stream: SSEStreamingApi,
+    options: StreamingServiceOptions,
+  ): Promise<StreamingServiceResponse>;
 }
 
 // Protocol Layer - Handles SSE protocol and orchestration
@@ -280,11 +287,11 @@ export async function getModels(c: Context) {
 
   // Only include if we have both API key and active models
   if (hasAnthropic && modelGroups.anthropic.length > 0) {
-    modelsConfig.anthropic = modelGroups.anthropic.map(model => model.modelId);
+    modelsConfig.anthropic = modelGroups.anthropic.map((model) => model.modelId);
   }
 
   if (hasOpenAI && modelGroups.openAI.length > 0) {
-    modelsConfig.openAI = modelGroups.openAI.map(model => model.modelId);
+    modelsConfig.openAI = modelGroups.openAI.map((model) => model.modelId);
   }
 
   return c.json(modelsConfig);
@@ -312,7 +319,7 @@ npx tsx scripts/populate-models.ts
 // Updated script connects to real database
 function createLocalDatabase(): D1Database {
   const wranglerDbDir = '.wrangler/state/v3/d1/miniflare-D1DatabaseObject';
-  const files = fs.readdirSync(wranglerDbDir).filter(f => f.endsWith('.sqlite'));
+  const files = fs.readdirSync(wranglerDbDir).filter((f) => f.endsWith('.sqlite'));
   const sqliteFile = path.join(wranglerDbDir, files[0]);
 
   const sqlite = new Database(sqliteFile);
@@ -324,109 +331,196 @@ function createLocalDatabase(): D1Database {
 
 ## Database Schema & Persistence
 
+### Overview
+
+The database schema has been **consolidated into a single comprehensive initial migration** that includes all tables and relationships needed for full LibreChat compatibility. This consolidation provides a complete schema from the start instead of requiring multiple migration files.
+
+**Schema Features:**
+
+- Complete conversation and message persistence with threading support
+- Dynamic model configuration with vision and thinking capabilities
+- File attachment system with R2 storage integration
+- Many-to-many message-files relationships for proper attachment handling
+- Comprehensive indexing for optimal query performance
+- Foreign key constraints with proper cascade behavior
+
+### Consolidated Schema Structure
+
+The consolidated `001_initial_schema.sql` includes:
+
+1. **conversations** - Chat conversations with metadata and settings
+2. **messages** - Individual messages within conversations
+3. **models** - AI model configurations with capabilities and pricing
+4. **files** - File attachments with R2 storage support
+5. **message_files** - Many-to-many relationship between messages and files
+
 ### Conversations Table
 
 ```sql
-CREATE TABLE conversations (
-    id TEXT PRIMARY KEY,           -- conversationId
-    user_id TEXT NOT NULL,         -- User ownership
-    title TEXT DEFAULT 'New Chat', -- Display title
-    endpoint TEXT,                 -- AI endpoint (anthropic, openAI)
-    model TEXT,                    -- AI model used
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,                    -- conversationId
+    user_id TEXT NOT NULL,                  -- User who owns the conversation
+    title TEXT DEFAULT 'New Chat',          -- Conversation title
+    endpoint TEXT,                          -- AI endpoint (openai, anthropic, etc.)
+    model TEXT,                             -- AI model used
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    is_archived BOOLEAN DEFAULT FALSE,
-    settings TEXT DEFAULT '{}',    -- JSON: model parameters
-    tags TEXT DEFAULT '[]',        -- JSON: conversation tags
-    metadata TEXT DEFAULT '{}'     -- JSON: additional data
+    is_archived BOOLEAN DEFAULT FALSE,      -- Whether conversation is archived
+    -- JSON fields for flexible storage
+    settings TEXT DEFAULT '{}',             -- Model parameters (temperature, top_p, etc.)
+    tags TEXT DEFAULT '[]',                 -- Array of conversation tags
+    metadata TEXT DEFAULT '{}'              -- Additional metadata (iconURL, greeting, spec, etc.)
 );
 ```
 
 ### Messages Table
 
 ```sql
-CREATE TABLE messages (
-    id TEXT PRIMARY KEY,           -- messageId
-    conversation_id TEXT NOT NULL, -- FK to conversations.id
-    parent_message_id TEXT,        -- Message threading
-    user_id TEXT NOT NULL,         -- User ownership
-    sender TEXT NOT NULL,          -- 'User', 'Claude', 'ChatGPT'
-    text TEXT NOT NULL,            -- Message content
-    is_created_by_user BOOLEAN NOT NULL,
-    model TEXT,                    -- AI model for this message
-    error BOOLEAN DEFAULT FALSE,
-    finish_reason TEXT,            -- Completion reason
-    token_count INTEGER,           -- Token usage
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,                    -- messageId
+    conversation_id TEXT NOT NULL,          -- Foreign key to conversations.id
+    parent_message_id TEXT,                 -- Parent message for threading
+    user_id TEXT NOT NULL,                  -- User who owns the message
+    sender TEXT NOT NULL,                   -- 'user' or 'assistant'
+    text TEXT NOT NULL,                     -- Message content
+    is_created_by_user BOOLEAN NOT NULL,    -- Whether message was created by user
+    model TEXT,                             -- AI model used for this message
+    error BOOLEAN DEFAULT FALSE,            -- Whether message has an error
+    finish_reason TEXT,                     -- Completion reason (stop, length, etc.)
+    token_count INTEGER,                    -- Number of tokens in message
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    metadata TEXT DEFAULT '{}',    -- JSON: files, plugins, etc.
+    -- JSON field for additional data
+    metadata TEXT DEFAULT '{}',             -- Files, plugins, tool calls, etc.
 
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 ```
 
-### Models Table (New)
+### Models Table
 
 ```sql
-CREATE TABLE models (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    model_id TEXT NOT NULL UNIQUE,
-    endpoint_type TEXT NOT NULL,
-    thinking BOOLEAN DEFAULT FALSE,
-    context_window INTEGER NOT NULL,
-    max_output INTEGER NOT NULL,
-    knowledge_cutoff DATETIME,
-    input_price_per_mtok REAL NOT NULL,
-    output_price_per_mtok REAL NOT NULL,
-    is_active BOOLEAN DEFAULT TRUE,
+CREATE TABLE IF NOT EXISTS models (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- Auto-incrementing primary key
+    name TEXT NOT NULL,                    -- Human-readable model name (e.g., "Sonnet 4")
+    model_id TEXT NOT NULL UNIQUE,         -- API model identifier (e.g., "claude-sonnet-4-20250514")
+    endpoint_type TEXT NOT NULL,           -- Endpoint type: "openAI" or "anthropic"
+    thinking BOOLEAN DEFAULT FALSE,        -- Whether model supports thinking/reasoning
+    vision BOOLEAN DEFAULT FALSE,          -- Whether model supports vision/image input
+    context_window INTEGER NOT NULL,       -- Maximum context window in tokens
+    max_output INTEGER NOT NULL,           -- Maximum output tokens
+    knowledge_cutoff DATETIME,             -- Knowledge cutoff date
+    input_price_per_mtok REAL NOT NULL,    -- Input price per million tokens ($)
+    output_price_per_mtok REAL NOT NULL,   -- Output price per million tokens ($)
+    is_active BOOLEAN DEFAULT TRUE,        -- Whether model is available for use
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-
--- Indexes for performance
-CREATE INDEX idx_models_endpoint_active ON models(endpoint_type, is_active);
-CREATE INDEX idx_models_active ON models(is_active);
 ```
 
-### Type System
+### Files Table
 
-Enhanced type system with Zod schemas for all entities:
+```sql
+CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id TEXT NOT NULL UNIQUE,        -- UUID for the file
+    temp_file_id TEXT,                    -- Temporary ID from client
+    user_id TEXT NOT NULL,                -- User who owns the file
+    conversation_id TEXT,                 -- Optional conversation reference
+    filename TEXT NOT NULL,               -- Original filename
+    filepath TEXT NOT NULL,               -- R2 object key
+    type TEXT NOT NULL,                   -- MIME type
+    bytes INTEGER NOT NULL,               -- File size
+    source TEXT DEFAULT 'r2',             -- Storage source
+    context TEXT DEFAULT 'message_attachment', -- Usage context
 
-```typescript
-import { z } from 'zod';
+    -- Image-specific fields
+    width INTEGER,                        -- Image width
+    height INTEGER,                       -- Image height
 
-// Model configuration types
-export const tModelSchema = z.object({
-  id: z.number(),
-  name: z.string(),
-  modelId: z.string(),
-  endpointType: z.enum(['anthropic', 'openAI']),
-  thinking: z.boolean(),
-  contextWindow: z.number(),
-  maxOutput: z.number(),
-  knowledgeCutoff: z.string().datetime().optional(),
-  inputPricePerMtok: z.number(),
-  outputPricePerMtok: z.number(),
-  isActive: z.boolean(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-});
+    -- Metadata and tracking
+    metadata TEXT DEFAULT '{}',           -- JSON metadata
+    usage_count INTEGER DEFAULT 0,        -- Track file usage
+    expires_at DATETIME,                  -- Optional expiration
 
-export type Model = z.infer<typeof tModelSchema>;
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
-// Existing conversation and message schemas
-export const tConversationSchema = z.object({
-  conversationId: z.string(),
-  title: z.string(),
-  user: z.string(),
-  endpoint: z.string().optional(),
-  suggestions: z.array(z.string()).optional(),
-  model: z.string().optional(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  // ... other fields
-});
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+);
+```
+
+### Message-Files Relationship Table
+
+```sql
+CREATE TABLE IF NOT EXISTS message_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT NOT NULL,              -- Foreign key to messages.id
+    file_id TEXT NOT NULL,                 -- Foreign key to files.file_id
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    -- Ensure no duplicate associations
+    UNIQUE(message_id, file_id),
+
+    -- Foreign key constraints
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
+);
+```
+
+### Comprehensive Indexing
+
+The consolidated schema includes all necessary indexes for optimal performance:
+
+```sql
+-- Conversation indexes
+CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conversations_user_archived ON conversations(user_id, is_archived);
+CREATE INDEX IF NOT EXISTS idx_conversations_user_updated ON conversations(user_id, updated_at DESC);
+
+-- Message indexes
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON messages(parent_message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at);
+
+-- Model indexes
+CREATE INDEX IF NOT EXISTS idx_models_endpoint_type ON models(endpoint_type);
+CREATE INDEX IF NOT EXISTS idx_models_active ON models(is_active);
+CREATE INDEX IF NOT EXISTS idx_models_endpoint_active ON models(endpoint_type, is_active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_models_model_id ON models(model_id);
+
+-- Files indexes
+CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id);
+CREATE INDEX IF NOT EXISTS idx_files_file_id ON files(file_id);
+CREATE INDEX IF NOT EXISTS idx_files_conversation_id ON files(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_files_user_created ON files(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files(expires_at);
+
+-- Message-files relationship indexes
+CREATE INDEX IF NOT EXISTS idx_message_files_message_id ON message_files(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_files_file_id ON message_files(file_id);
+CREATE INDEX IF NOT EXISTS idx_message_files_created_at ON message_files(created_at);
+
+-- Search optimization indexes
+CREATE INDEX IF NOT EXISTS idx_conversations_title_search ON conversations(user_id, title);
+CREATE INDEX IF NOT EXISTS idx_messages_text_search ON messages(conversation_id, text);
+```
+
+### Database Triggers
+
+The schema includes automated timestamp management:
+
+```sql
+-- Update trigger for files table
+CREATE TRIGGER IF NOT EXISTS update_files_updated_at
+    AFTER UPDATE ON files
+    FOR EACH ROW
+BEGIN
+    UPDATE files SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
 ```
 
 ---
@@ -517,7 +611,7 @@ error: Boolean(row.error),
 
 ```typescript
 // Convert booleans to integers for SQLite compatibility
-const sqliteArgs = args.map(arg => typeof arg === 'boolean' ? (arg ? 1 : 0) : arg);
+const sqliteArgs = args.map((arg) => (typeof arg === 'boolean' ? (arg ? 1 : 0) : arg));
 const result = stmt.run(...sqliteArgs);
 ```
 
@@ -986,12 +1080,13 @@ ADMIN_GROUP=admin  # Default: 'admin'
 ### Database Setup
 
 ```bash
-# Run schema migrations
+# Run consolidated schema migration
 npx wrangler d1 execute librechat --file=./src/db/migrations/001_initial_schema.sql
-npx wrangler d1 execute librechat --file=./src/db/migrations/002_models_table.sql
 
 # Verify setup
 npx wrangler d1 execute librechat --command="SELECT name FROM sqlite_master WHERE type='table';"
+
+# Should show all tables: conversations, messages, models, files, message_files
 ```
 
 ### Model Population

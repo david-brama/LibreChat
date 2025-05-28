@@ -5,7 +5,10 @@ import { ConversationRepository } from '../../db/repositories/conversation';
 import { MessageRepository } from '../../db/repositories/message';
 import { OpenAIStreamingService } from '../../services/OpenAIStreamingService';
 import { SseService, SseCompletionResult } from '../../services/SseService';
-import { AskRequest, CreateMessageDTO } from '../../types';
+import { AskRequest, CreateConversationDTO, CreateMessageDTO } from '../../types';
+
+// Constants for parent message ID handling (matching LibreChat)
+const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 
 /**
  * Handler for POST /api/edit/openai
@@ -124,6 +127,58 @@ export async function editOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
 
     await userMessagePromise;
 
+    // Build conversation history for context
+    let conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+
+    try {
+      console.log('[editOpenAI] Building conversation history for edit');
+
+      // Get all messages for this conversation
+      const allMessages = await messageRepository.findByConversationId(
+        conversationId,
+        oidcUser.sub,
+      );
+
+      // Build conversation context up to and including the edited user message
+      const editedMessageIndex = allMessages.findIndex((msg) => msg.messageId === messageIdToEdit);
+      const contextMessages = allMessages.slice(0, editedMessageIndex + 1);
+
+      // Update the edited message in our context with the new text
+      const updatedContextMessages = contextMessages.map((msg) =>
+        msg.messageId === messageIdToEdit ? { ...msg, text } : msg,
+      );
+
+      // Convert to OpenAI format
+      conversationHistory = updatedContextMessages
+        .filter(
+          (msg) => msg.sender === 'user' || msg.sender === 'assistant' || msg.sender === 'User',
+        )
+        .map((msg) => ({
+          role: (msg.isCreatedByUser ? 'user' : 'assistant') as 'user' | 'assistant',
+          content: msg.text || '',
+        }));
+
+      // Add the new user message to the conversation
+      conversationHistory.push({
+        role: 'user',
+        content: text,
+      });
+
+      console.log('[editOpenAI] Conversation history built:', {
+        historyLength: conversationHistory.length,
+        messageTypes: conversationHistory.map((m) => m.role),
+      });
+    } catch (error) {
+      console.error('[editOpenAI] Error building conversation history:', error);
+      // Fallback to just the current message
+      conversationHistory = [
+        {
+          role: 'user',
+          content: text,
+        },
+      ];
+    }
+
     // Use SSE Service for streaming
     return streamSSE(c, async (stream) => {
       const sseService = new SseService();
@@ -132,12 +187,7 @@ export async function editOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       await sseService.streamResponse(stream, {
         streamingService,
         streamingOptions: {
-          messages: [
-            {
-              role: 'user',
-              content: text,
-            },
-          ],
+          messages: conversationHistory,
           model,
           responseMessageId: newResponseMessageId,
           parentMessageId: messageId,
@@ -165,8 +215,7 @@ export async function editOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
           return {
             requestMessage: {
               messageId: userMessage.messageId,
-              parentMessageId:
-                userMessage.parentMessageId || '00000000-0000-0000-0000-000000000000',
+              parentMessageId: userMessage.parentMessageId || NO_PARENT,
               conversationId: conversationId,
               sender: userMessage.sender,
               text: userMessage.text,

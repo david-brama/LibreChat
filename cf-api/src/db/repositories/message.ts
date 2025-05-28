@@ -1,5 +1,8 @@
 import { CreateMessageDTO, Message, UpdateMessageDTO } from '../../types';
 
+// Constants for parent message ID handling (matching LibreChat)
+const NO_PARENT = '00000000-0000-0000-0000-000000000000';
+
 /**
  * Repository class for managing messages in the D1 database
  * Handles CRUD operations for individual messages within conversations
@@ -182,6 +185,82 @@ export class MessageRepository {
       .run();
 
     return result.meta.changes;
+  }
+
+  /**
+   * Gets conversation history by following the parentMessageId chain from a specific message
+   * Returns messages in chronological order (oldest first) that form the conversation thread
+   * This is used to build context for AI model requests
+   *
+   * @param conversationId The conversation ID
+   * @param userId The user ID for security
+   * @param parentMessageId The message ID to start from (usually the user's latest message)
+   * @returns Array of messages in chronological order forming the conversation thread
+   */
+  async getConversationHistory(
+    conversationId: string,
+    userId: string,
+    parentMessageId: string,
+  ): Promise<Message[]> {
+    // Get all messages for the conversation first
+    const allMessages = await this.findByConversationId(conversationId, userId);
+
+    if (allMessages.length === 0) {
+      return [];
+    }
+
+    // Build a map for quick lookup
+    const messageMap = new Map<string, Message>();
+    for (const message of allMessages) {
+      messageMap.set(message.messageId, message);
+    }
+
+    // Follow the parentMessageId chain backwards to build the thread
+    const orderedMessages: Message[] = [];
+    let currentMessageId: string | null = parentMessageId;
+    const visitedMessageIds = new Set<string>();
+
+    while (currentMessageId) {
+      // Prevent infinite loops
+      if (visitedMessageIds.has(currentMessageId)) {
+        console.warn('[MessageRepository] Circular reference detected in message chain:', {
+          conversationId,
+          currentMessageId,
+        });
+        break;
+      }
+
+      const message = messageMap.get(currentMessageId);
+      visitedMessageIds.add(currentMessageId);
+
+      if (!message) {
+        console.warn('[MessageRepository] Message not found in chain:', {
+          conversationId,
+          messageId: currentMessageId,
+        });
+        break;
+      }
+
+      orderedMessages.push(message);
+
+      // Move to parent message (null or NO_PARENT constant means root)
+      currentMessageId =
+        message.parentMessageId === NO_PARENT || message.parentMessageId === null
+          ? null
+          : message.parentMessageId;
+    }
+
+    // Reverse to get chronological order (oldest first)
+    orderedMessages.reverse();
+
+    console.log('[MessageRepository] Built conversation history:', {
+      conversationId,
+      startingFromMessageId: parentMessageId,
+      historyLength: orderedMessages.length,
+      messageIds: orderedMessages.map((m) => m.messageId),
+    });
+
+    return orderedMessages;
   }
 
   /**

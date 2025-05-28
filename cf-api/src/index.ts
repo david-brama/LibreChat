@@ -7,7 +7,6 @@ import {
   TokenEndpointResponses,
   oidcAuthMiddleware,
 } from '@hono/oidc-auth';
-import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 
 import api from './api';
 

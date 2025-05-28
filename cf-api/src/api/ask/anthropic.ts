@@ -8,6 +8,9 @@ import { AnthropicTitleService } from '../../services/AnthropicTitleService';
 import { SseService, SseCompletionResult } from '../../services/SseService';
 import { AskRequest, CreateConversationDTO, CreateMessageDTO } from '../../types';
 
+// Constants for parent message ID handling (matching LibreChat)
+const NO_PARENT = '00000000-0000-0000-0000-000000000000';
+
 /**
  * Handler for POST /api/ask/anthropic
  * Processes chat completion requests with Anthropic's Claude model using the shared streaming service
@@ -78,8 +81,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
     const userMessage = {
       messageId,
       conversationId,
-      parentMessageId:
-        parentMessageId === '00000000-0000-0000-0000-000000000000' ? null : parentMessageId,
+      parentMessageId: parentMessageId === NO_PARENT ? null : parentMessageId,
       user: oidcUser.sub,
       sender: 'User',
       text,
@@ -116,14 +118,52 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
 
     // Check if this is the first message for title generation
     const shouldGenerateTitle =
-      isNewConversation &&
-      (!parentMessageId || parentMessageId === '00000000-0000-0000-0000-000000000000');
+      isNewConversation && (!parentMessageId || parentMessageId === NO_PARENT);
 
     console.log('[askAnthropic] Title generation check:', {
       isNewConversation,
       parentMessageId,
       shouldGenerateTitle,
       conversationId,
+    });
+
+    // Build conversation history for context
+    let conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+
+    if (!isNewConversation && messageId && parentMessageId && parentMessageId !== NO_PARENT) {
+      console.log('[askAnthropic] Building conversation history from message chain');
+
+      try {
+        // Get conversation history by following parentMessageId chain
+        const historyMessages = await messageRepository.getConversationHistory(
+          conversationId,
+          oidcUser.sub,
+          parentMessageId, // Use parentMessageId as the starting point, not messageId
+        );
+
+        // Convert to Anthropic format
+        conversationHistory = historyMessages.map((msg) => ({
+          role: msg.isCreatedByUser ? 'user' : 'assistant',
+          content: msg.text || '',
+        }));
+
+        console.log('[askAnthropic] Conversation history built:', {
+          historyLength: conversationHistory.length,
+          messageTypes: conversationHistory.map((m) => m.role),
+        });
+      } catch (error) {
+        console.error('[askAnthropic] Error building conversation history:', error);
+        // Continue with empty history rather than failing
+        conversationHistory = [];
+      }
+    } else {
+      console.log('[askAnthropic] New conversation or no parent - no history needed');
+    }
+
+    // Add current user message to the conversation
+    conversationHistory.push({
+      role: 'user',
+      content: text,
     });
 
     // Use SSE Service for streaming
@@ -134,12 +174,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       await sseService.streamResponse(stream, {
         streamingService,
         streamingOptions: {
-          messages: [
-            {
-              role: 'user',
-              content: text,
-            },
-          ],
+          messages: conversationHistory,
           model,
           responseMessageId,
           parentMessageId: messageId,

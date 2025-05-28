@@ -19,10 +19,10 @@ export class ModelRepository {
       .prepare(
         `
         INSERT INTO models (
-          name, model_id, endpoint_type, thinking, context_window, max_output,
+          name, model_id, endpoint_type, thinking, vision, context_window, max_output,
           knowledge_cutoff, input_price_per_mtok, output_price_per_mtok, is_active,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       )
       .bind(
@@ -30,6 +30,7 @@ export class ModelRepository {
         data.modelId,
         data.endpointType,
         data.thinking ?? false,
+        data.vision ?? false,
         data.contextWindow,
         data.maxOutput,
         data.knowledgeCutoff || null,
@@ -91,6 +92,26 @@ export class ModelRepository {
   }
 
   /**
+   * Gets all active models for a specific endpoint (alias for findByEndpointType)
+   * @param endpoint The endpoint name ("openAI" or "anthropic")
+   * @returns Promise<Model[]> Array of active models for the endpoint
+   */
+  async findByEndpoint(endpoint: string): Promise<Model[]> {
+    // Map endpoint names to types
+    const endpointMap: Record<string, 'openAI' | 'anthropic'> = {
+      openAI: 'openAI',
+      anthropic: 'anthropic',
+    };
+
+    const endpointType = endpointMap[endpoint];
+    if (!endpointType) {
+      return [];
+    }
+
+    return this.findByEndpointType(endpointType);
+  }
+
+  /**
    * Gets all active models grouped by endpoint type
    * @returns Promise<{anthropic: Model[], openAI: Model[]}> Models grouped by endpoint
    */
@@ -148,6 +169,11 @@ export class ModelRepository {
     if (data.thinking !== undefined) {
       updateFields.push('thinking = ?');
       bindings.push(data.thinking);
+    }
+
+    if (data.vision !== undefined) {
+      updateFields.push('vision = ?');
+      bindings.push(data.vision);
     }
 
     if (data.contextWindow !== undefined) {
@@ -229,6 +255,7 @@ export class ModelRepository {
       modelId: row.model_id,
       endpointType: row.endpoint_type as 'openAI' | 'anthropic',
       thinking: Boolean(row.thinking),
+      vision: Boolean(row.vision),
       contextWindow: row.context_window,
       maxOutput: row.max_output,
       knowledgeCutoff: row.knowledge_cutoff,

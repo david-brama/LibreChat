@@ -35,6 +35,12 @@
       "database_id": "your-database-id-here",
     },
   ],
+  "r2_buckets": [
+    {
+      "binding": "R2_BUCKET",
+      "bucket_name": "librechat-files",
+    },
+  ],
 
   /**
    * Smart Placement

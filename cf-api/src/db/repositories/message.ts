@@ -48,6 +48,11 @@ export class MessageRepository {
       )
       .run();
 
+    // Associate files if provided
+    if (data.fileIds && data.fileIds.length > 0) {
+      await this.associateFiles(data.messageId, data.fileIds);
+    }
+
     const message = await this.findById(data.messageId);
     if (!message) {
       throw new Error('Failed to create message');
@@ -68,7 +73,7 @@ export class MessageRepository {
       return null;
     }
 
-    return this.mapRowToMessage(result);
+    return this.mapRowToMessage(result, messageId);
   }
 
   /**
@@ -84,7 +89,7 @@ export class MessageRepository {
       return null;
     }
 
-    return this.mapRowToMessage(result);
+    return this.mapRowToMessage(result, messageId);
   }
 
   /**
@@ -102,7 +107,12 @@ export class MessageRepository {
       .bind(conversationId, userId)
       .all();
 
-    return results.results.map((row) => this.mapRowToMessage(row));
+    // Get files for all messages in batch for efficiency
+    const messages = await Promise.all(
+      results.results.map((row: any) => this.mapRowToMessage(row, row.id)),
+    );
+
+    return messages;
   }
 
   /**
@@ -264,12 +274,168 @@ export class MessageRepository {
   }
 
   /**
+   * Associates files with a message
+   * Creates records in the message_files junction table
+   *
+   * @param messageId The message ID to associate files with
+   * @param fileIds Array of file IDs to associate
+   * @returns Promise that resolves when all associations are created
+   */
+  async associateFiles(messageId: string, fileIds: string[]): Promise<void> {
+    if (fileIds.length === 0) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+
+    // Use a transaction to ensure atomicity
+    await this.db.batch(
+      fileIds.map((fileId) =>
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO message_files (message_id, file_id, created_at) 
+             VALUES (?, ?, ?)`,
+          )
+          .bind(messageId, fileId, now),
+      ),
+    );
+
+    console.log('[MessageRepository] Associated files with message:', {
+      messageId,
+      fileIds,
+      count: fileIds.length,
+    });
+  }
+
+  /**
+   * Gets all file IDs associated with a message
+   *
+   * @param messageId The message ID to get files for
+   * @returns Array of file IDs associated with the message
+   */
+  async getAssociatedFileIds(messageId: string): Promise<string[]> {
+    const results = await this.db
+      .prepare(
+        `SELECT file_id FROM message_files 
+         WHERE message_id = ? 
+         ORDER BY created_at ASC`,
+      )
+      .bind(messageId)
+      .all();
+
+    return results.results.map((row: any) => row.file_id);
+  }
+
+  /**
+   * Gets all files associated with a message with full file details
+   * This joins with the files table to get complete file information
+   *
+   * @param messageId The message ID to get files for
+   * @returns Array of file objects with complete information
+   */
+  async getAssociatedFiles(messageId: string): Promise<any[]> {
+    const results = await this.db
+      .prepare(
+        `SELECT f.file_id, f.filename, f.filepath, f.type, f.bytes, 
+                f.width, f.height, f.metadata, mf.created_at as associated_at
+         FROM message_files mf
+         JOIN files f ON mf.file_id = f.file_id
+         WHERE mf.message_id = ?
+         ORDER BY mf.created_at ASC`,
+      )
+      .bind(messageId)
+      .all();
+
+    return results.results.map((row: any) => ({
+      type: row.type,
+      file_id: row.file_id,
+      filepath: row.filepath,
+      filename: row.filename,
+      embedded: false, // Default value as per LibreChat format
+      metadata: row.metadata ? JSON.parse(row.metadata) : null,
+      width: row.width,
+      height: row.height,
+    }));
+  }
+
+  /**
+   * Removes file associations from a message
+   *
+   * @param messageId The message ID to remove file associations from
+   * @param fileIds Optional array of specific file IDs to remove. If not provided, removes all associations
+   * @returns Number of associations removed
+   */
+  async removeFileAssociations(messageId: string, fileIds?: string[]): Promise<number> {
+    let query: string;
+    let bindings: any[];
+
+    if (fileIds && fileIds.length > 0) {
+      const placeholders = fileIds.map(() => '?').join(', ');
+      query = `DELETE FROM message_files WHERE message_id = ? AND file_id IN (${placeholders})`;
+      bindings = [messageId, ...fileIds];
+    } else {
+      query = `DELETE FROM message_files WHERE message_id = ?`;
+      bindings = [messageId];
+    }
+
+    const result = await this.db
+      .prepare(query)
+      .bind(...bindings)
+      .run();
+
+    const removedCount = result.meta.changes;
+
+    console.log('[MessageRepository] Removed file associations:', {
+      messageId,
+      fileIds: fileIds || 'all',
+      removedCount,
+    });
+
+    return removedCount;
+  }
+
+  /**
+   * Gets all messages that reference a specific file
+   * Useful for file management and cleanup operations
+   *
+   * @param fileId The file ID to find messages for
+   * @param userId Optional user ID for filtering (security)
+   * @returns Array of message IDs that reference the file
+   */
+  async getMessagesWithFile(fileId: string, userId?: string): Promise<string[]> {
+    let query: string;
+    let bindings: any[];
+
+    if (userId) {
+      query = `SELECT DISTINCT mf.message_id 
+               FROM message_files mf
+               JOIN messages m ON mf.message_id = m.id
+               WHERE mf.file_id = ? AND m.user_id = ?`;
+      bindings = [fileId, userId];
+    } else {
+      query = `SELECT message_id FROM message_files WHERE file_id = ?`;
+      bindings = [fileId];
+    }
+
+    const results = await this.db
+      .prepare(query)
+      .bind(...bindings)
+      .all();
+
+    return results.results.map((row: any) => row.message_id);
+  }
+
+  /**
    * Maps a database row to a Message object
    * Ensures proper type conversion from SQLite storage to expected types
+   * Includes associated files in the message object
    */
-  private mapRowToMessage(row: any): Message {
+  private async mapRowToMessage(row: any, messageId: string): Promise<Message> {
+    // Get associated files for this message
+    const files = await this.getAssociatedFiles(messageId);
+
     return {
-      messageId: row.id,
+      messageId,
       conversationId: row.conversation_id,
       parentMessageId: row.parent_message_id,
       user: row.user_id,
@@ -283,6 +449,7 @@ export class MessageRepository {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       metadata: row.metadata ? JSON.parse(row.metadata) : {},
+      files: files, // Include files in the message response
     };
   }
 }

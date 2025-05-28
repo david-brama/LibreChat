@@ -49,6 +49,21 @@ export const tMessageSchema = z.object({
   user: z.string().optional(),
   tokenCount: z.number().nullable().optional(),
   metadata: z.record(z.any()).optional(),
+  /* files */
+  files: z
+    .array(
+      z.object({
+        type: z.string(),
+        file_id: z.string(),
+        filepath: z.string(),
+        filename: z.string(),
+        embedded: z.boolean(),
+        metadata: z.any().nullable(),
+        height: z.number().optional(),
+        width: z.number().optional(),
+      }),
+    )
+    .optional(),
 });
 
 export const tConversationSchema = z.object({
@@ -125,10 +140,83 @@ export const tConversationSchema = z.object({
 });
 
 /**
+ * File schema for LibreChat compatibility
+ */
+export const tFileSchema = z.object({
+  _id: z.string().optional(),
+  file_id: z.string(),
+  temp_file_id: z.string().optional(),
+  user: z.string(),
+  filename: z.string(),
+  filepath: z.string(),
+  type: z.string(),
+  bytes: z.number(),
+  source: z.string().default('r2'),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  embedded: z.boolean().optional(),
+  metadata: z.record(z.any()).optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+});
+
+/**
  * Inferred types from zod schemas - these guarantee compatibility with LibreChat frontend
  */
 export type Message = z.infer<typeof tMessageSchema>;
 export type Conversation = z.infer<typeof tConversationSchema>;
+export type File = z.infer<typeof tFileSchema>;
+
+/**
+ * File upload response type (LibreChat compatible)
+ */
+export interface TFileUpload extends File {
+  temp_file_id: string;
+}
+
+/**
+ * File configuration for endpoints
+ */
+export interface EndpointFileConfig {
+  fileLimit: number;
+  fileSizeLimit: number;
+  totalSizeLimit: number;
+  supportedMimeTypes: string[];
+}
+
+/**
+ * File configuration object
+ */
+export interface FileConfig {
+  endpoints: {
+    anthropic?: EndpointFileConfig;
+    openAI?: EndpointFileConfig;
+  };
+  serverFileSizeLimit: number;
+  avatarSizeLimit: number;
+}
+
+/**
+ * Image content types for AI providers
+ */
+export interface ImageContentOpenAI {
+  type: 'image_url';
+  image_url: {
+    url: string;
+    detail: 'auto' | 'low' | 'high';
+  };
+}
+
+export interface ImageContentAnthropic {
+  type: 'image';
+  source: {
+    type: 'base64';
+    media_type: string;
+    data: string;
+  };
+}
+
+export type ImageContent = ImageContentOpenAI | ImageContentAnthropic;
 
 /**
  * Minimal endpoint configuration for MVP
@@ -219,6 +307,30 @@ export interface MessageRow {
 }
 
 /**
+ * File database row type
+ */
+export interface FileRow {
+  id: number;
+  file_id: string;
+  temp_file_id: string | null;
+  user_id: string;
+  conversation_id: string | null;
+  filename: string;
+  filepath: string;
+  type: string;
+  bytes: number;
+  source: string;
+  context: string;
+  width: number | null;
+  height: number | null;
+  metadata: string; // JSON
+  usage_count: number;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
  * Create/Update DTOs
  */
 export interface CreateConversationDTO {
@@ -254,6 +366,7 @@ export interface CreateMessageDTO {
   finishReason?: string;
   tokenCount?: number;
   metadata?: Record<string, any>;
+  fileIds?: string[];
 }
 
 export interface UpdateMessageDTO {
@@ -262,6 +375,38 @@ export interface UpdateMessageDTO {
   finishReason?: string;
   tokenCount?: number;
   metadata?: Record<string, any>;
+}
+
+/**
+ * File DTOs
+ */
+export interface CreateFileDTO {
+  file_id: string;
+  temp_file_id?: string;
+  user_id: string;
+  conversation_id?: string;
+  filename: string;
+  filepath: string;
+  type: string;
+  bytes: number;
+  source?: string;
+  context?: string;
+  width?: number;
+  height?: number;
+  metadata?: Record<string, any>;
+  expires_at?: string;
+}
+
+export interface UpdateFileDTO {
+  filename?: string;
+  filepath?: string;
+  type?: string;
+  bytes?: number;
+  width?: number;
+  height?: number;
+  metadata?: Record<string, any>;
+  usage_count?: number;
+  expires_at?: string;
 }
 
 /**
@@ -285,6 +430,7 @@ export interface AskRequest {
   key: string;
   isContinued: boolean;
   isTemporary: boolean;
+  files?: Array<{ file_id: string }>;
 }
 
 /**
@@ -311,13 +457,15 @@ export interface StreamingMessage {
 export interface StreamingServiceOptions {
   messages: Array<{
     role: 'user' | 'assistant';
-    content: string;
+    content: string | Array<{ type: string; text?: string; source?: any; image_url?: any }>;
   }>;
   model?: string;
   maxTokens?: number;
   responseMessageId: string;
   parentMessageId: string;
   conversationId: string | null;
+  fileIds?: string[];
+  userId?: string;
 }
 
 /**
@@ -356,6 +504,7 @@ export interface Model {
   modelId: string;
   endpointType: 'openAI' | 'anthropic';
   thinking: boolean;
+  vision: boolean;
   contextWindow: number;
   maxOutput: number;
   knowledgeCutoff: string | null;
@@ -375,6 +524,7 @@ export interface ModelRow {
   model_id: string;
   endpoint_type: string;
   thinking: boolean;
+  vision: boolean;
   context_window: number;
   max_output: number;
   knowledge_cutoff: string | null;
@@ -393,6 +543,7 @@ export interface CreateModelDTO {
   modelId: string;
   endpointType: 'openAI' | 'anthropic';
   thinking?: boolean;
+  vision?: boolean;
   contextWindow: number;
   maxOutput: number;
   knowledgeCutoff?: string;
@@ -409,10 +560,20 @@ export interface UpdateModelDTO {
   modelId?: string;
   endpointType?: 'openAI' | 'anthropic';
   thinking?: boolean;
+  vision?: boolean;
   contextWindow?: number;
   maxOutput?: number;
   knowledgeCutoff?: string;
   inputPricePerMtok?: number;
   outputPricePerMtok?: number;
   isActive?: boolean;
+}
+
+/**
+ * File processing result for image encoding
+ */
+export interface FileProcessingResult {
+  text: string;
+  files: File[];
+  image_urls: ImageContent[];
 }

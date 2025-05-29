@@ -3,6 +3,7 @@ import { getAuth } from '@hono/oidc-auth';
 import { streamSSE } from 'hono/streaming';
 import { ConversationRepository } from '../../db/repositories/conversation';
 import { MessageRepository } from '../../db/repositories/message';
+import { ModelRepository } from '../../db/repositories/model';
 import { OpenAIStreamingService } from '../../services/OpenAIStreamingService';
 import { SseService, SseCompletionResult } from '../../services/SseService';
 import { AskRequest, CreateConversationDTO, CreateMessageDTO } from '../../types';
@@ -41,7 +42,37 @@ export async function editOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       overrideParentMessageId,
       endpoint,
       model,
+      spec,
     } = requestData;
+
+    // Initialize model repository to resolve spec to model
+    const modelRepository = new ModelRepository(c.env.DB);
+
+    // Resolve model from spec or fall back to model parameter
+    let resolvedModel = model;
+    let modelConfig = null;
+
+    if (spec) {
+      // Find the model configuration by spec
+      modelConfig = await modelRepository.findBySpec(spec);
+      if (modelConfig) {
+        resolvedModel = modelConfig.modelId;
+        console.log('[editOpenAI] Resolved spec to model:', {
+          spec,
+          resolvedModel,
+          modelLabel: modelConfig.label,
+        });
+      } else {
+        console.warn('[editOpenAI] Spec not found, falling back to model parameter:', {
+          spec,
+          fallbackModel: model,
+        });
+      }
+    }
+
+    if (!resolvedModel) {
+      return c.json({ error: 'No model specified (spec or model parameter required)' }, 400);
+    }
 
     console.log('[editOpenAI] Processing edit request:', {
       userId: oidcUser.sub,
@@ -51,7 +82,8 @@ export async function editOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       responseMessageId,
       overrideParentMessageId,
       messageLength: text.length,
-      model,
+      spec,
+      model: resolvedModel,
     });
 
     if (!text || !conversationId) {
@@ -101,7 +133,7 @@ export async function editOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       sender: 'User',
       text,
       isCreatedByUser: true,
-      model,
+      model: resolvedModel,
       error: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -116,7 +148,7 @@ export async function editOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       sender: userMessage.sender,
       text: userMessage.text,
       isCreatedByUser: true,
-      model,
+      model: userMessage.model,
       error: false,
     };
 
@@ -188,10 +220,18 @@ export async function editOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
         streamingService,
         streamingOptions: {
           messages: conversationHistory,
-          model,
+          model: resolvedModel,
           responseMessageId: newResponseMessageId,
           parentMessageId: messageId,
           conversationId,
+          // Pass model configuration parameters
+          systemMessage: modelConfig?.systemMessage,
+          temperature: modelConfig?.temperature,
+          topP: modelConfig?.topP,
+          frequencyPenalty: modelConfig?.frequencyPenalty,
+          presencePenalty: modelConfig?.presencePenalty,
+          stopSequences: modelConfig?.stopSequences,
+          maxTokens: modelConfig?.maxTokens || modelConfig?.maxOutput,
         },
         userMessage: {
           messageId: userMessage.messageId,
@@ -203,7 +243,7 @@ export async function editOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
         },
         responseMessage: {
           messageId: newResponseMessageId,
-          model: model || 'gpt-4.1',
+          model: resolvedModel,
           endpoint: endpoint || 'openAI',
         },
         conversation: {

@@ -86,11 +86,14 @@ models.post('/', async (c) => {
       !body.modelId ||
       !body.endpointType ||
       !body.contextWindow ||
-      !body.maxOutput
+      !body.maxOutput ||
+      !body.spec ||
+      !body.label
     ) {
       return c.json(
         {
-          error: 'Missing required fields: name, modelId, endpointType, contextWindow, maxOutput',
+          error:
+            'Missing required fields: name, modelId, endpointType, contextWindow, maxOutput, spec, label',
         },
         400,
       );
@@ -113,6 +116,12 @@ models.post('/', async (c) => {
     const existingModel = await modelRepository.findByModelId(body.modelId);
     if (existingModel) {
       return c.json({ error: 'Model ID already exists' }, 409);
+    }
+
+    // Check if spec already exists
+    const existingSpec = await modelRepository.findBySpec(body.spec);
+    if (existingSpec) {
+      return c.json({ error: 'Spec already exists' }, 409);
     }
 
     const model = await modelRepository.create(body);
@@ -166,6 +175,14 @@ models.put('/:id', async (c) => {
       const conflictingModel = await modelRepository.findByModelId(body.modelId);
       if (conflictingModel) {
         return c.json({ error: 'Model ID already exists' }, 409);
+      }
+    }
+
+    // Check if new spec conflicts with existing model
+    if (body.spec && body.spec !== existingModel.spec) {
+      const conflictingSpec = await modelRepository.findBySpec(body.spec);
+      if (conflictingSpec) {
+        return c.json({ error: 'Spec already exists' }, 409);
       }
     }
 
@@ -259,30 +276,75 @@ models.post('/populate', async (c) => {
         inputPricePerMtok: 3,
         outputPricePerMtok: 15,
         isActive: true,
+        // ModelSpecs fields
+        spec: 'claude-dev',
+        label: 'Claude - For Devs',
+        description: 'Claude 4.0 model for developers with advanced thinking capabilities',
+        iconUrl: 'anthropic',
+        isDefault: false,
+        sortOrder: 2,
+        systemMessage: 'You are a helpful AI assistant specialized in software development.',
+        // Preset configuration
+        modelLabel: 'Sonnet 4.0',
+        temperature: 0.7,
+        topP: 0.85,
+        topK: 40,
+        promptCache: true,
+        thinkingBudget: 10000,
       },
       {
         name: 'GPT-4.1',
         modelId: 'gpt-4.1',
         endpointType: 'openAI',
         thinking: false,
+        vision: true,
         contextWindow: 128000,
         maxOutput: 4096,
         knowledgeCutoff: '2024-10-01T00:00:00Z',
         inputPricePerMtok: 10,
         outputPricePerMtok: 30,
         isActive: true,
+        // ModelSpecs fields
+        spec: 'gpt-generics',
+        label: 'GPT - Generic',
+        description: 'Generic model for all tasks with vision capabilities',
+        iconUrl: 'openAI',
+        isDefault: true,
+        sortOrder: 1,
+        systemMessage: 'You are a helpful AI assistant.',
+        // Preset configuration
+        modelLabel: 'GPT 4.1',
+        temperature: 0.2,
+        topP: 0.85,
+        frequencyPenalty: 0.1,
+        presencePenalty: 0.1,
       },
       {
         name: 'GPT-4.1 Nano',
         modelId: 'gpt-4.1-nano',
         endpointType: 'openAI',
         thinking: false,
+        vision: false,
         contextWindow: 32000,
         maxOutput: 2048,
         knowledgeCutoff: '2024-10-01T00:00:00Z',
         inputPricePerMtok: 2,
         outputPricePerMtok: 8,
         isActive: true,
+        // ModelSpecs fields
+        spec: 'gpt-nano',
+        label: 'GPT - Nano',
+        description: 'Lightweight GPT model for simple tasks',
+        iconUrl: 'openAI',
+        isDefault: false,
+        sortOrder: 3,
+        systemMessage: 'You are a helpful AI assistant optimized for quick responses.',
+        // Preset configuration
+        modelLabel: 'GPT 4.1 Nano',
+        temperature: 0.3,
+        topP: 0.9,
+        frequencyPenalty: 0.0,
+        presencePenalty: 0.0,
       },
     ];
 

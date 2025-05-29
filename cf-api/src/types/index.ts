@@ -426,7 +426,8 @@ export interface AskRequest {
   overrideParentMessageId: string | null;
   endpoint: string;
   endpointType: string;
-  model: string;
+  model: string; // Keep for backward compatibility
+  spec?: string; // New spec field - the unique name from modelSpecs
   key: string;
   isContinued: boolean;
   isTemporary: boolean;
@@ -466,6 +467,17 @@ export interface StreamingServiceOptions {
   conversationId: string | null;
   fileIds?: string[];
   userId?: string;
+
+  // Model preset parameters
+  systemMessage?: string;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  stopSequences?: string[];
+  promptCache?: boolean;
+  thinkingBudget?: number;
 }
 
 /**
@@ -495,8 +507,8 @@ export interface IStreamingService {
 }
 
 /**
- * Model configuration interface
- * Represents an AI model with its capabilities and pricing
+ * Model configuration interface for modelSpecs
+ * Represents an AI model with its capabilities, pricing, and preset configuration
  */
 export interface Model {
   id: number;
@@ -513,6 +525,30 @@ export interface Model {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+
+  // New modelSpecs fields
+  spec: string; // Unique spec name (indexed)
+  label: string; // Human-readable label
+  description?: string; // Model description
+  iconUrl?: string; // Icon URL
+  isDefault: boolean; // Whether this is the default model
+  sortOrder: number; // Sort order for display
+  systemMessage?: string; // System message for pre-defined behavior
+
+  // Flattened preset fields
+  modelLabel?: string; // Model label from preset
+  promptPrefix?: string; // Prompt prefix from preset
+  temperature?: number; // Temperature parameter
+  topP?: number; // Top P parameter
+  topK?: number; // Top K parameter (for Anthropic)
+  frequencyPenalty?: number; // Frequency penalty (for OpenAI)
+  presencePenalty?: number; // Presence penalty (for OpenAI)
+  maxTokens?: number; // Max tokens override
+  stopSequences?: string[]; // Stop sequences
+  reasoningEffort?: string; // Reasoning effort for omni models
+  resendFiles?: boolean; // Whether to resend files
+  promptCache?: boolean; // Whether to use prompt cache
+  thinkingBudget?: number; // Thinking budget for Anthropic
 }
 
 /**
@@ -533,10 +569,34 @@ export interface ModelRow {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+
+  // New modelSpecs fields
+  spec: string;
+  label: string;
+  description: string | null;
+  icon_url: string | null;
+  is_default: boolean;
+  sort_order: number;
+  system_message: string | null;
+
+  // Flattened preset fields
+  model_label: string | null;
+  prompt_prefix: string | null;
+  temperature: number | null;
+  top_p: number | null;
+  top_k: number | null;
+  frequency_penalty: number | null;
+  presence_penalty: number | null;
+  max_tokens: number | null;
+  stop_sequences: string | null; // JSON array
+  reasoning_effort: string | null;
+  resend_files: boolean;
+  prompt_cache: boolean;
+  thinking_budget: number | null;
 }
 
 /**
- * DTO for creating a new model
+ * DTO for creating a new model with modelSpecs structure
  */
 export interface CreateModelDTO {
   name: string;
@@ -550,6 +610,30 @@ export interface CreateModelDTO {
   inputPricePerMtok: number;
   outputPricePerMtok: number;
   isActive?: boolean;
+
+  // New modelSpecs fields
+  spec: string; // Required unique spec name
+  label: string; // Required human-readable label
+  description?: string;
+  iconUrl?: string;
+  isDefault?: boolean;
+  sortOrder?: number;
+  systemMessage?: string;
+
+  // Optional preset fields
+  modelLabel?: string;
+  promptPrefix?: string;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  maxTokens?: number;
+  stopSequences?: string[];
+  reasoningEffort?: string;
+  resendFiles?: boolean;
+  promptCache?: boolean;
+  thinkingBudget?: number;
 }
 
 /**
@@ -567,6 +651,30 @@ export interface UpdateModelDTO {
   inputPricePerMtok?: number;
   outputPricePerMtok?: number;
   isActive?: boolean;
+
+  // New modelSpecs fields
+  spec?: string;
+  label?: string;
+  description?: string;
+  iconUrl?: string;
+  isDefault?: boolean;
+  sortOrder?: number;
+  systemMessage?: string;
+
+  // Optional preset fields
+  modelLabel?: string;
+  promptPrefix?: string;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  maxTokens?: number;
+  stopSequences?: string[];
+  reasoningEffort?: string;
+  resendFiles?: boolean;
+  promptCache?: boolean;
+  thinkingBudget?: number;
 }
 
 /**

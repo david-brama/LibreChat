@@ -1,5 +1,6 @@
 import { Context } from 'hono';
 import { TStartupConfig } from 'librechat-data-provider';
+import { ModelRepository } from '../../db/repositories/model';
 
 /**
  * Handler for GET /api/config
@@ -11,6 +12,10 @@ import { TStartupConfig } from 'librechat-data-provider';
  */
 export async function getConfig(c: Context) {
   try {
+    // Initialize model repository to fetch modelSpecs
+    const modelRepository = new ModelRepository(c.env.DB);
+    const modelSpecs = await modelRepository.getModelSpecs();
+
     const config: TStartupConfig = {
       appTitle: c.env.APP_TITLE || 'My App',
       socialLogins: ['openid'],
@@ -36,7 +41,11 @@ export async function getConfig(c: Context) {
       instanceProjectId: '',
       // Enable model selector interface for MVP
       interface: {
-        modelSelect: true,
+        modelSelect: false,
+        endpointsMenu: false,
+        presets: false,
+        bookmarks: true,
+        prompts: true,
       },
       balance: {
         enabled: false,
@@ -45,6 +54,11 @@ export async function getConfig(c: Context) {
         refillIntervalValue: 0,
         refillIntervalUnit: 'seconds',
         refillAmount: 0,
+      },
+      modelSpecs: {
+        enforce: true,
+        prioritize: true,
+        list: modelSpecs,
       },
       customFooter: c.env.CUSTOM_FOOTER || 'The cake is a lie.',
     };

@@ -53,12 +53,25 @@ export class AnthropicStreamingService implements IStreamingService {
       responseMessageId,
       parentMessageId,
       conversationId,
+      systemMessage,
+      temperature,
+      topP,
+      topK,
+      stopSequences,
+      promptCache,
+      thinkingBudget,
     } = options;
 
     console.log('[AnthropicStreamingService] Starting stream:', {
       messageCount: messages.length,
       model,
       responseMessageId,
+      hasSystemMessage: !!systemMessage,
+      temperature,
+      topP,
+      topK,
+      promptCache,
+      thinkingBudget,
     });
 
     try {
@@ -103,18 +116,78 @@ export class AnthropicStreamingService implements IStreamingService {
         }
       });
 
-      // Start streaming from Anthropic
-      const anthropicStream = await this.anthropic.messages.stream({
+      // Build Anthropic API request with preset parameters
+      const anthropicRequest: Anthropic.MessageCreateParams = {
         model,
         max_tokens: maxTokens,
         messages: anthropicMessages,
+      };
+
+      // Add system message if provided
+      if (systemMessage) {
+        anthropicRequest.system = systemMessage;
+        console.log('[AnthropicStreamingService] Added system message:', {
+          length: systemMessage.length,
+          content: systemMessage.substring(0, 200) + '...',
+          type: typeof systemMessage,
+          isString: typeof systemMessage === 'string',
+        });
+      } else {
+        console.log('[AnthropicStreamingService] No system message provided');
+      }
+
+      // Add preset parameters
+      if (temperature !== undefined) {
+        anthropicRequest.temperature = temperature;
+      }
+      if (topP !== undefined) {
+        anthropicRequest.top_p = topP;
+      }
+      if (topK !== undefined) {
+        anthropicRequest.top_k = topK;
+      }
+      if (stopSequences && stopSequences.length > 0) {
+        anthropicRequest.stop_sequences = stopSequences;
+      }
+
+      console.log('[AnthropicStreamingService] Request parameters:', {
+        model: anthropicRequest.model,
+        max_tokens: anthropicRequest.max_tokens,
+        temperature: anthropicRequest.temperature,
+        top_p: anthropicRequest.top_p,
+        top_k: anthropicRequest.top_k,
+        hasSystem: !!anthropicRequest.system,
+        systemType: typeof anthropicRequest.system,
+        systemLength: anthropicRequest.system?.length,
+        stop_sequences: anthropicRequest.stop_sequences,
       });
+
+      console.log('[AnthropicStreamingService] Full Anthropic request:', {
+        ...anthropicRequest,
+        messages: '[MESSAGES_ARRAY]', // Don't log full messages for brevity
+        system: anthropicRequest.system
+          ? typeof anthropicRequest.system === 'string'
+            ? `"${anthropicRequest.system.substring(0, 100)}..."`
+            : '[SYSTEM_BLOCKS_ARRAY]'
+          : undefined,
+      });
+
+      // Start streaming from Anthropic
+      console.log('[AnthropicStreamingService] Making Anthropic API call...');
+      const anthropicStream = await this.anthropic.messages.stream(anthropicRequest);
+
+      console.log('[AnthropicStreamingService] Anthropic stream created successfully');
 
       let responseText = '';
       let tokenCount = 0;
 
       // Process streaming response
       for await (const event of anthropicStream) {
+        console.log('[AnthropicStreamingService] Received event:', {
+          type: event.type,
+          eventKeys: Object.keys(event),
+        });
+
         if (event.type === 'content_block_delta') {
           const delta = (event as any).delta;
           if (delta.type === 'text_delta') {

@@ -56,41 +56,41 @@ export async function getSearchEnabled(c: Context) {
   }
 }
 
-/**
- * Handler for GET /api/files/config
- * Returns file upload configuration
- * For MVP: Returns minimal config with files disabled
- */
-export async function getFileConfig(c: Context) {
-  try {
-    // MVP: Basic file config with everything disabled
-    const fileConfig = {
-      endpoints: {
-        default: {
-          disabled: true,
-          fileLimit: 0,
-          fileSizeLimit: 0,
-          totalSizeLimit: 0,
-          supportedMimeTypes: [],
-        },
-        anthropic: {
-          disabled: true,
-          fileLimit: 0,
-          fileSizeLimit: 0,
-          totalSizeLimit: 0,
-          supportedMimeTypes: [],
-        },
-      },
-      serverFileSizeLimit: 0,
-      avatarSizeLimit: 0,
-    };
+// /**
+//  * Handler for GET /api/files/config
+//  * Returns file upload configuration
+//  * For MVP: Returns minimal config with files disabled
+//  */
+// export async function getFileConfig(c: Context) {
+//   try {
+//     // MVP: Basic file config with everything disabled
+//     const fileConfig = {
+//       endpoints: {
+//         default: {
+//           disabled: true,
+//           fileLimit: 0,
+//           fileSizeLimit: 0,
+//           totalSizeLimit: 0,
+//           supportedMimeTypes: [],
+//         },
+//         anthropic: {
+//           disabled: true,
+//           fileLimit: 0,
+//           fileSizeLimit: 0,
+//           totalSizeLimit: 0,
+//           supportedMimeTypes: [],
+//         },
+//       },
+//       serverFileSizeLimit: 0,
+//       avatarSizeLimit: 0,
+//     };
 
-    return c.json(fileConfig);
-  } catch (error) {
-    console.error('[getFileConfig] Error:', error);
-    return c.json({ error: 'Error fetching file config' }, 500);
-  }
-}
+//     return c.json(fileConfig);
+//   } catch (error) {
+//     console.error('[getFileConfig] Error:', error);
+//     return c.json({ error: 'Error fetching file config' }, 500);
+//   }
+// }
 
 /**
  * Handler for GET /api/agents/tools/web_search/auth

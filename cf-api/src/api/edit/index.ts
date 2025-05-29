@@ -3,6 +3,7 @@ import { getAuth } from '@hono/oidc-auth';
 import { streamSSE } from 'hono/streaming';
 import { MessageRepository } from '../../db/repositories/message';
 import { ConversationRepository } from '../../db/repositories/conversation';
+import { ModelRepository } from '../../db/repositories/model';
 import { AnthropicStreamingService } from '../../services/AnthropicStreamingService';
 import { OpenAIStreamingService } from '../../services/OpenAIStreamingService';
 import { SseService, SseCompletionResult } from '../../services/SseService';
@@ -37,7 +38,37 @@ edit.post('/anthropic', async (c) => {
       responseMessageId,
       overrideParentMessageId,
       generation,
+      spec,
+      model,
     } = body;
+
+    // Initialize model repository to resolve spec to model
+    const modelRepository = new ModelRepository(c.env.DB);
+
+    // Resolve model from spec or fall back to model parameter
+    let resolvedModel = model;
+    let modelConfig = null;
+
+    if (spec) {
+      // Find the model configuration by spec
+      modelConfig = await modelRepository.findBySpec(spec);
+      if (modelConfig) {
+        resolvedModel = modelConfig.modelId;
+        console.log('[POST /api/edit/anthropic] Resolved spec to model:', {
+          spec,
+          resolvedModel,
+          modelLabel: modelConfig.label,
+        });
+      } else {
+        console.warn(
+          '[POST /api/edit/anthropic] Spec not found, falling back to model parameter:',
+          {
+            spec,
+            fallbackModel: model,
+          },
+        );
+      }
+    }
 
     console.log('[POST /api/edit/anthropic] Editing message and regenerating:', {
       userId: oidcUser.sub,
@@ -46,6 +77,8 @@ edit.post('/anthropic', async (c) => {
       responseMessageId,
       overrideParentMessageId,
       hasText: !!text,
+      spec,
+      model: resolvedModel,
       generation: generation?.substring(0, 100) + '...',
     });
 
@@ -175,9 +208,19 @@ edit.post('/anthropic', async (c) => {
         streamingService,
         streamingOptions: {
           messages: conversationMessages,
+          model: resolvedModel,
           responseMessageId: responseMessageIdToUse,
           parentMessageId: messageIdToEdit,
           conversationId,
+          // Pass model configuration parameters
+          systemMessage: modelConfig?.systemMessage,
+          temperature: modelConfig?.temperature,
+          topP: modelConfig?.topP,
+          topK: modelConfig?.topK,
+          stopSequences: modelConfig?.stopSequences,
+          promptCache: modelConfig?.promptCache,
+          thinkingBudget: modelConfig?.thinkingBudget,
+          maxTokens: modelConfig?.maxTokens || modelConfig?.maxOutput,
         },
         userMessage: {
           messageId: messageIdToEdit,
@@ -189,7 +232,7 @@ edit.post('/anthropic', async (c) => {
         },
         responseMessage: {
           messageId: responseMessageIdToUse,
-          model: 'claude-sonnet-4-20250514',
+          model: resolvedModel || 'claude-sonnet-4-20250514',
           endpoint: 'anthropic',
         },
         conversation: {
@@ -207,7 +250,7 @@ edit.post('/anthropic', async (c) => {
             sender: 'assistant',
             text: result.responseText,
             isCreatedByUser: false,
-            model: 'claude-sonnet-4-20250514',
+            model: resolvedModel || 'claude-sonnet-4-20250514',
             error: false,
             tokenCount: result.tokenCount,
             createdAt: assistantMessageToUpdate?.createdAt || new Date().toISOString(),
@@ -224,7 +267,7 @@ edit.post('/anthropic', async (c) => {
             sender: 'assistant',
             text: result.responseText,
             isCreatedByUser: false,
-            model: 'claude-sonnet-4-20250514',
+            model: resolvedModel || 'claude-sonnet-4-20250514',
             error: false,
             tokenCount: result.tokenCount,
           };

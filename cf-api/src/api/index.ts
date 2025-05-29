@@ -1,5 +1,6 @@
 import { getAuth, oidcAuthMiddleware } from '@hono/oidc-auth';
-import { Hono } from 'hono';
+import { Hono, Context, Next } from 'hono';
+import { createUnauthorizedResponse } from '../utils/auth';
 import conversations from './conversations';
 import endpoints from './endpoints';
 import models from './models';
@@ -17,19 +18,45 @@ import files from './files';
 
 const api = new Hono<{ Bindings: CloudflareBindings }>();
 
+/**
+ * Custom authentication middleware that redirects to /login on authentication failures
+ * instead of returning 401 errors. This is required for proper client-side handling
+ * of expired tokens.
+ */
+const authMiddlewareWithRedirect = async (
+  c: Context<{ Bindings: CloudflareBindings }>,
+  next: Next,
+) => {
+  try {
+    // Try to get the current auth status
+    const oidcUser = await getAuth(c);
+
+    // If no user is authenticated, redirect to login
+    if (!oidcUser) {
+      return createUnauthorizedResponse(c);
+    }
+
+    // User is authenticated, continue with the request
+    return next();
+  } catch (error) {
+    console.error('[authMiddlewareWithRedirect] Error:', error);
+    return c.redirect('/login');
+  }
+};
+
 // Middleware to protect authenticated routes
 api.use('/:resource/*', (c, next) => {
   const resource = c.req.param('resource');
   if (resource === 'config' || resource === 'banner' || resource === 'auth') {
     return next();
   }
-  return oidcAuthMiddleware()(c, next);
+  return authMiddlewareWithRedirect(c, next);
 });
 
 api.get('/user', async (c) => {
   const oidcUser = await getAuth(c);
   if (!oidcUser) {
-    return c.json(null);
+    return createUnauthorizedResponse(c);
   }
   return c.json({
     id: oidcUser.sub,
@@ -94,7 +121,7 @@ api.use('/admin/*', async (c, next) => {
     !oidcUser.groups ||
     !(oidcUser.groups as string[]).includes(adminGroup as string)
   ) {
-    return c.json({ error: 'Unauthorized' }, 401);
+    return createUnauthorizedResponse(c);
   }
   return next();
 });

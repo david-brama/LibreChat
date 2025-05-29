@@ -3,7 +3,10 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "prebuild:client-cf": "mv ../client/vite.config.ts ../client/vite.config.ts.bak && cp vite.config.client-cf.ts ../client/vite.config.ts && rm -rf ../client/src/client-overrides && cp --recursive src/client-overrides ../client/src/client-overrides",
+    "build:client-cf": "cd ../client && vite build --mode production --emptyOutDir",
+    "postbuild:client-cf": "rm -rf ../client/src/client-overrides && mv ../client/vite.config.ts.bak ../client/vite.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",

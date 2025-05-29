@@ -2,13 +2,13 @@ import { Model, ModelRow, CreateModelDTO, UpdateModelDTO } from '../../types';
 
 /**
  * Repository class for handling model data operations with D1 database
- * Manages AI model configurations and capabilities
+ * Manages AI model configurations and capabilities for modelSpecs
  */
 export class ModelRepository {
   constructor(private db: D1Database) {}
 
   /**
-   * Creates a new model in the database
+   * Creates a new model in the database with modelSpecs structure
    * @param data Model data to create
    * @returns Promise<Model> The created model
    */
@@ -21,8 +21,11 @@ export class ModelRepository {
         INSERT INTO models (
           name, model_id, endpoint_type, thinking, vision, context_window, max_output,
           knowledge_cutoff, input_price_per_mtok, output_price_per_mtok, is_active,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          spec, label, description, icon_url, is_default, sort_order, system_message,
+          model_label, prompt_prefix, temperature, top_p, top_k, frequency_penalty,
+          presence_penalty, max_tokens, stop_sequences, reasoning_effort, resend_files,
+          prompt_cache, thinking_budget, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       )
       .bind(
@@ -37,12 +40,32 @@ export class ModelRepository {
         data.inputPricePerMtok,
         data.outputPricePerMtok,
         data.isActive ?? true,
+        data.spec,
+        data.label,
+        data.description || null,
+        data.iconUrl || null,
+        data.isDefault ?? false,
+        data.sortOrder ?? 0,
+        data.systemMessage || null,
+        data.modelLabel || null,
+        data.promptPrefix || null,
+        data.temperature || null,
+        data.topP || null,
+        data.topK || null,
+        data.frequencyPenalty || null,
+        data.presencePenalty || null,
+        data.maxTokens || null,
+        data.stopSequences ? JSON.stringify(data.stopSequences) : null,
+        data.reasoningEffort || null,
+        data.resendFiles ?? false,
+        data.promptCache ?? false,
+        data.thinkingBudget || null,
         now,
         now,
       )
       .run();
 
-    const model = await this.findByModelId(data.modelId);
+    const model = await this.findBySpec(data.spec);
     if (!model) {
       throw new Error('Failed to create model');
     }
@@ -78,13 +101,29 @@ export class ModelRepository {
   }
 
   /**
+   * Finds a model by its spec (unique identifier for modelSpecs)
+   * @param spec Spec identifier (e.g., "gpt-generics", "claude-dev")
+   * @returns Promise<Model | null> The found model or null
+   */
+  async findBySpec(spec: string): Promise<Model | null> {
+    const result = await this.db
+      .prepare('SELECT * FROM models WHERE spec = ?')
+      .bind(spec)
+      .first<ModelRow>();
+
+    return result ? this.mapRowToModel(result) : null;
+  }
+
+  /**
    * Gets all active models for a specific endpoint type
    * @param endpointType The endpoint type ("openAI" or "anthropic")
    * @returns Promise<Model[]> Array of active models for the endpoint
    */
   async findByEndpointType(endpointType: 'openAI' | 'anthropic'): Promise<Model[]> {
     const results = await this.db
-      .prepare('SELECT * FROM models WHERE endpoint_type = ? AND is_active = ? ORDER BY name')
+      .prepare(
+        'SELECT * FROM models WHERE endpoint_type = ? AND is_active = ? ORDER BY sort_order, name',
+      )
       .bind(endpointType, true)
       .all<ModelRow>();
 
@@ -117,7 +156,7 @@ export class ModelRepository {
    */
   async findAllActiveGrouped(): Promise<{ anthropic: Model[]; openAI: Model[] }> {
     const results = await this.db
-      .prepare('SELECT * FROM models WHERE is_active = ? ORDER BY endpoint_type, name')
+      .prepare('SELECT * FROM models WHERE is_active = ? ORDER BY endpoint_type, sort_order, name')
       .bind(true)
       .all<ModelRow>();
 
@@ -130,12 +169,63 @@ export class ModelRepository {
   }
 
   /**
+   * Gets all models formatted as LibreChat modelSpecs
+   * @returns Promise<ModelSpec[]> Array of models in modelSpecs format
+   */
+  async getModelSpecs(): Promise<
+    Array<{
+      name: string;
+      label: string;
+      preset: any;
+      default?: boolean;
+      description?: string;
+      iconURL?: string;
+    }>
+  > {
+    const results = await this.db
+      .prepare('SELECT * FROM models WHERE is_active = ? ORDER BY sort_order, name')
+      .bind(true)
+      .all<ModelRow>();
+
+    const models = (results.results || []).map((row) => this.mapRowToModel(row));
+
+    return models.map((model) => ({
+      name: model.spec,
+      label: model.label,
+      preset: {
+        endpoint: model.endpointType,
+        modelLabel: model.modelLabel || model.label,
+        model: model.modelId,
+        temperature: model.temperature,
+        top_p: model.topP,
+        topP: model.topP,
+        topK: model.topK,
+        frequency_penalty: model.frequencyPenalty,
+        presence_penalty: model.presencePenalty,
+        maxOutputTokens: model.maxOutput,
+        max_tokens: model.maxTokens,
+        stop: model.stopSequences,
+        reasoning_effort: model.reasoningEffort,
+        resendFiles: model.resendFiles,
+        promptCache: model.promptCache,
+        thinking: model.thinking,
+        thinkingBudget: model.thinkingBudget,
+        promptPrefix: model.promptPrefix,
+        system: model.systemMessage,
+      },
+      default: model.isDefault,
+      description: model.description,
+      iconURL: model.iconUrl || model.endpointType,
+    }));
+  }
+
+  /**
    * Gets all models (active and inactive)
    * @returns Promise<Model[]> Array of all models
    */
   async findAll(): Promise<Model[]> {
     const results = await this.db
-      .prepare('SELECT * FROM models ORDER BY endpoint_type, name')
+      .prepare('SELECT * FROM models ORDER BY endpoint_type, sort_order, name')
       .all<ModelRow>();
 
     return (results.results || []).map((row) => this.mapRowToModel(row));
@@ -151,6 +241,7 @@ export class ModelRepository {
     const updateFields: string[] = [];
     const bindings: any[] = [];
 
+    // Basic model fields
     if (data.name !== undefined) {
       updateFields.push('name = ?');
       bindings.push(data.name);
@@ -204,6 +295,108 @@ export class ModelRepository {
     if (data.isActive !== undefined) {
       updateFields.push('is_active = ?');
       bindings.push(data.isActive);
+    }
+
+    // ModelSpecs fields
+    if (data.spec !== undefined) {
+      updateFields.push('spec = ?');
+      bindings.push(data.spec);
+    }
+
+    if (data.label !== undefined) {
+      updateFields.push('label = ?');
+      bindings.push(data.label);
+    }
+
+    if (data.description !== undefined) {
+      updateFields.push('description = ?');
+      bindings.push(data.description);
+    }
+
+    if (data.iconUrl !== undefined) {
+      updateFields.push('icon_url = ?');
+      bindings.push(data.iconUrl);
+    }
+
+    if (data.isDefault !== undefined) {
+      updateFields.push('is_default = ?');
+      bindings.push(data.isDefault);
+    }
+
+    if (data.sortOrder !== undefined) {
+      updateFields.push('sort_order = ?');
+      bindings.push(data.sortOrder);
+    }
+
+    if (data.systemMessage !== undefined) {
+      updateFields.push('system_message = ?');
+      bindings.push(data.systemMessage);
+    }
+
+    // Preset fields
+    if (data.modelLabel !== undefined) {
+      updateFields.push('model_label = ?');
+      bindings.push(data.modelLabel);
+    }
+
+    if (data.promptPrefix !== undefined) {
+      updateFields.push('prompt_prefix = ?');
+      bindings.push(data.promptPrefix);
+    }
+
+    if (data.temperature !== undefined) {
+      updateFields.push('temperature = ?');
+      bindings.push(data.temperature);
+    }
+
+    if (data.topP !== undefined) {
+      updateFields.push('top_p = ?');
+      bindings.push(data.topP);
+    }
+
+    if (data.topK !== undefined) {
+      updateFields.push('top_k = ?');
+      bindings.push(data.topK);
+    }
+
+    if (data.frequencyPenalty !== undefined) {
+      updateFields.push('frequency_penalty = ?');
+      bindings.push(data.frequencyPenalty);
+    }
+
+    if (data.presencePenalty !== undefined) {
+      updateFields.push('presence_penalty = ?');
+      bindings.push(data.presencePenalty);
+    }
+
+    if (data.maxTokens !== undefined) {
+      updateFields.push('max_tokens = ?');
+      bindings.push(data.maxTokens);
+    }
+
+    if (data.stopSequences !== undefined) {
+      updateFields.push('stop_sequences = ?');
+      bindings.push(data.stopSequences ? JSON.stringify(data.stopSequences) : null);
+    }
+
+    if (data.reasoningEffort !== undefined) {
+      updateFields.push('reasoning_effort = ?');
+      bindings.push(data.reasoningEffort);
+    }
+
+    if (data.resendFiles !== undefined) {
+      updateFields.push('resend_files = ?');
+      bindings.push(data.resendFiles);
+    }
+
+    if (data.promptCache !== undefined) {
+      updateFields.push('prompt_cache = ?');
+      bindings.push(data.promptCache);
+    }
+
+    if (data.thinkingBudget !== undefined) {
+      updateFields.push('thinking_budget = ?');
+      bindings.push(data.thinkingBudget);
     }
 
     if (updateFields.length === 0) {
@@ -264,6 +457,30 @@ export class ModelRepository {
       isActive: Boolean(row.is_active),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+
+      // ModelSpecs fields
+      spec: row.spec,
+      label: row.label,
+      description: row.description || undefined,
+      iconUrl: row.icon_url || undefined,
+      isDefault: Boolean(row.is_default),
+      sortOrder: row.sort_order,
+      systemMessage: row.system_message || undefined,
+
+      // Preset fields
+      modelLabel: row.model_label || undefined,
+      promptPrefix: row.prompt_prefix || undefined,
+      temperature: row.temperature || undefined,
+      topP: row.top_p || undefined,
+      topK: row.top_k || undefined,
+      frequencyPenalty: row.frequency_penalty || undefined,
+      presencePenalty: row.presence_penalty || undefined,
+      maxTokens: row.max_tokens || undefined,
+      stopSequences: row.stop_sequences ? JSON.parse(row.stop_sequences) : undefined,
+      reasoningEffort: row.reasoning_effort || undefined,
+      resendFiles: Boolean(row.resend_files),
+      promptCache: Boolean(row.prompt_cache),
+      thinkingBudget: row.thinking_budget || undefined,
     };
   }
 }

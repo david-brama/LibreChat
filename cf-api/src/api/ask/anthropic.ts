@@ -9,6 +9,7 @@ import { AnthropicStreamingService } from '../../services/AnthropicStreamingServ
 import { OpenAITitleService } from '../../services/OpenAITitleService';
 import { SseService, SseCompletionResult } from '../../services/SseService';
 import { AskRequest, CreateConversationDTO, CreateMessageDTO } from '../../types';
+import { ModelRepository } from '../../db/repositories/model';
 
 // Constants for parent message ID handling (matching LibreChat)
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
@@ -42,14 +43,48 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       messageId,
       endpoint,
       model,
+      spec,
       files,
     } = requestData;
+
+    // Initialize model repository to resolve spec to model
+    const modelRepository = new ModelRepository(c.env.DB);
+
+    // Resolve model from spec or fall back to model parameter
+    let resolvedModel = model;
+    let modelConfig = null;
+
+    if (spec) {
+      // Find the model configuration by spec
+      modelConfig = await modelRepository.findBySpec(spec);
+      if (modelConfig) {
+        resolvedModel = modelConfig.modelId;
+        console.log('[askAnthropic] Resolved spec to model:', {
+          spec,
+          resolvedModel,
+          modelLabel: modelConfig.label,
+          hasSystemMessage: !!modelConfig.systemMessage,
+          systemMessageLength: modelConfig.systemMessage?.length,
+          systemMessagePreview: modelConfig.systemMessage?.substring(0, 100),
+        });
+      } else {
+        console.warn('[askAnthropic] Spec not found, falling back to model parameter:', {
+          spec,
+          fallbackModel: model,
+        });
+      }
+    }
+
+    if (!resolvedModel) {
+      return c.json({ error: 'No model specified (spec or model parameter required)' }, 400);
+    }
 
     console.log('[askAnthropic] Processing request:', {
       userId: oidcUser.sub,
       conversationId: requestConversationId,
       messageLength: text.length,
-      model,
+      spec,
+      model: resolvedModel,
       hasFiles: !!files?.length,
       fileCount: files?.length || 0,
     });
@@ -117,7 +152,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
         userId: oidcUser.sub,
         title: 'New Chat',
         endpoint,
-        model,
+        model: resolvedModel,
       };
 
       conversationPromise = conversationRepository.create(createConvoData);
@@ -135,7 +170,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       sender: 'User',
       text,
       isCreatedByUser: true,
-      model,
+      model: resolvedModel,
       error: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -150,7 +185,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       sender: userMessage.sender,
       text: userMessage.text,
       isCreatedByUser: true,
-      model,
+      model: userMessage.model,
       error: false,
       fileIds: files?.map((f) => f.file_id),
     };
@@ -247,16 +282,38 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
       const sseService = new SseService();
       const streamingService = new AnthropicStreamingService(c.env.ANTHROPIC_API_KEY);
 
+      console.log('[askAnthropic] About to call streaming service with options:', {
+        model: resolvedModel,
+        responseMessageId,
+        parentMessageId: messageId,
+        conversationId,
+        hasSystemMessage: !!modelConfig?.systemMessage,
+        systemMessage: modelConfig?.systemMessage
+          ? `"${modelConfig.systemMessage.substring(0, 200)}..."`
+          : 'NOT_SET',
+        temperature: modelConfig?.temperature,
+        topP: modelConfig?.topP,
+        topK: modelConfig?.topK,
+      });
+
       await sseService.streamResponse(stream, {
         streamingService,
         streamingOptions: {
           messages: conversationHistory,
-          model,
+          model: resolvedModel,
           responseMessageId,
           parentMessageId: messageId,
           conversationId,
           fileIds: files?.map((f) => f.file_id),
           userId: oidcUser.sub,
+          systemMessage: modelConfig?.systemMessage,
+          temperature: modelConfig?.temperature,
+          topP: modelConfig?.topP,
+          topK: modelConfig?.topK,
+          stopSequences: modelConfig?.stopSequences,
+          promptCache: modelConfig?.promptCache,
+          thinkingBudget: modelConfig?.thinkingBudget,
+          maxTokens: modelConfig?.maxTokens || modelConfig?.maxOutput,
         },
         userMessage: {
           messageId: userMessage.messageId,
@@ -268,7 +325,7 @@ export async function askAnthropic(c: Context<{ Bindings: CloudflareBindings }>)
         },
         responseMessage: {
           messageId: responseMessageId,
-          model: model || 'claude-3-sonnet',
+          model: resolvedModel,
           endpoint: endpoint || 'anthropic',
         },
         conversation: conversation

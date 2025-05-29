@@ -523,6 +523,100 @@ BEGIN
 END;
 ```
 
+### File Association System
+
+The file association system implements a proper many-to-many relationship between messages and files, replacing the previous JSON-based approach stored in the `metadata` field.
+
+**Key Features:**
+
+- **Many-to-Many Relationships**: Multiple files can be attached to a single message, and files can be referenced by multiple messages
+- **Automatic Association**: Files are automatically associated when creating messages with `fileIds`
+- **LibreChat Compatibility**: Messages include a `files` array in the response format expected by the frontend
+- **Efficient Queries**: Optimized database queries with proper indexing for file lookups
+- **Cascade Deletion**: File associations are automatically cleaned up when messages or files are deleted
+
+**Usage in API Requests:**
+
+```typescript
+// When creating a message with file attachments
+const askRequest: AskRequest = {
+  text: 'extract the text',
+  messageId: 'e7d46f08-ccb6-4342-b2a0-9028ccfdf98c',
+  conversationId: 'cba5d934-d209-4bf0-acb2-69ce8ab9606a',
+  parentMessageId: '00000000-0000-0000-0000-000000000000',
+  files: [{ file_id: 'b86bb3c2-6f22-4143-925c-2d7ff907d3f0' }],
+  // ... other fields
+};
+```
+
+**Message Response Format:**
+
+```typescript
+// Messages now include files array in LibreChat format
+{
+  "messageId": "e7d46f08-ccb6-4342-b2a0-9028ccfdf98c",
+  "conversationId": "cba5d934-d209-4bf0-acb2-69ce8ab9606a",
+  "text": "extract the text",
+  "files": [
+    {
+      "type": "image/png",
+      "file_id": "b86bb3c2-6f22-4143-925c-2d7ff907d3f0",
+      "filepath": "/images/67c846cd5f4c41aa6c741053/b86bb3c2-6f22-4143-925c-2d7ff907d3f0__Screenshot_from_2025-02-12_15-14-22.png",
+      "filename": "Screenshot from 2025-02-12 15-14-22.png",
+      "embedded": false,
+      "metadata": null,
+      "height": 560,
+      "width": 742
+    }
+  ]
+  // ... other message fields
+}
+```
+
+**Repository Methods:**
+
+```typescript
+class MessageRepository {
+  // Associate files with a message
+  async associateFiles(messageId: string, fileIds: string[]): Promise<void>;
+
+  // Get file IDs associated with a message
+  async getAssociatedFileIds(messageId: string): Promise<string[]>;
+
+  // Get full file details for a message
+  async getAssociatedFiles(messageId: string): Promise<File[]>;
+
+  // Remove file associations
+  async removeFileAssociations(messageId: string, fileIds?: string[]): Promise<number>;
+
+  // Find messages that reference a specific file
+  async getMessagesWithFile(fileId: string, userId?: string): Promise<string[]>;
+}
+```
+
+### Schema Consolidation Benefits
+
+**Development Advantages:**
+
+- **Single Migration**: One comprehensive schema file instead of multiple incremental migrations
+- **Complete Setup**: All tables, relationships, and indexes created together for consistency
+- **Simplified Deployment**: No complex migration dependency chains or ordering issues
+- **Clear Structure**: Easy to understand the complete data model at a glance
+
+**Production Benefits:**
+
+- **Atomic Schema Creation**: All database structures created in a single transaction
+- **Optimal Indexing**: All indexes designed together for best query performance
+- **Referential Integrity**: Foreign key constraints established consistently across all tables
+- **No Migration Conflicts**: Eliminates potential issues with partial migration states
+
+**Maintenance Benefits:**
+
+- **Easier Testing**: Test against the complete schema without migration complexity
+- **Better Documentation**: Single source of truth for the database structure
+- **Reduced Complexity**: Fewer files to manage and understand
+- **Version Control**: Cleaner history without multiple migration file changes
+
 ---
 
 ## Major Issues Resolved

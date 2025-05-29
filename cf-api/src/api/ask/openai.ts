@@ -9,6 +9,7 @@ import { OpenAIStreamingService } from '../../services/OpenAIStreamingService';
 import { OpenAITitleService } from '../../services/OpenAITitleService';
 import { SseService, SseCompletionResult } from '../../services/SseService';
 import { AskRequest, CreateConversationDTO, CreateMessageDTO } from '../../types';
+import { ModelRepository } from '../../db/repositories/model';
 
 // Constants for parent message ID handling (matching LibreChat)
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
@@ -42,14 +43,45 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       messageId,
       endpoint,
       model,
+      spec,
       files,
     } = requestData;
+
+    // Initialize model repository to resolve spec to model
+    const modelRepository = new ModelRepository(c.env.DB);
+
+    // Resolve model from spec or fall back to model parameter
+    let resolvedModel = model;
+    let modelConfig = null;
+
+    if (spec) {
+      // Find the model configuration by spec
+      modelConfig = await modelRepository.findBySpec(spec);
+      if (modelConfig) {
+        resolvedModel = modelConfig.modelId;
+        console.log('[askOpenAI] Resolved spec to model:', {
+          spec,
+          resolvedModel,
+          modelLabel: modelConfig.label,
+        });
+      } else {
+        console.warn('[askOpenAI] Spec not found, falling back to model parameter:', {
+          spec,
+          fallbackModel: model,
+        });
+      }
+    }
+
+    if (!resolvedModel) {
+      return c.json({ error: 'No model specified (spec or model parameter required)' }, 400);
+    }
 
     console.log('[askOpenAI] Processing request:', {
       userId: oidcUser.sub,
       conversationId: requestConversationId,
       messageLength: text.length,
-      model,
+      spec,
+      model: resolvedModel,
       hasFiles: !!files?.length,
       fileCount: files?.length || 0,
       fileIds: files?.map((f) => f.file_id) || [],
@@ -145,7 +177,7 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
         userId: oidcUser.sub,
         title: 'New Chat',
         endpoint,
-        model,
+        model: resolvedModel,
       };
 
       conversationPromise = conversationRepository.create(createConvoData);
@@ -190,7 +222,7 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       text, // Original text for database storage
       content: userMessageContent, // Formatted content for AI processing
       isCreatedByUser: true,
-      model,
+      model: resolvedModel,
       error: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -214,7 +246,7 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
       sender: userMessage.sender,
       text: userMessage.text,
       isCreatedByUser: true,
-      model,
+      model: resolvedModel,
       error: false,
       fileIds: files?.map((f) => f.file_id),
     };
@@ -323,7 +355,7 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
     // Use SSE Service for streaming
     return streamSSE(c, async (stream) => {
       console.log('[askOpenAI] Starting SSE stream with options:', {
-        model,
+        model: resolvedModel,
         responseMessageId,
         parentMessageId: messageId,
         conversationId,
@@ -341,12 +373,19 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
         streamingService,
         streamingOptions: {
           messages: conversationHistory,
-          model,
+          model: resolvedModel,
           responseMessageId,
           parentMessageId: messageId,
           conversationId,
           fileIds: files?.map((f) => f.file_id),
           userId: oidcUser.sub,
+          systemMessage: modelConfig?.systemMessage,
+          temperature: modelConfig?.temperature,
+          topP: modelConfig?.topP,
+          frequencyPenalty: modelConfig?.frequencyPenalty,
+          presencePenalty: modelConfig?.presencePenalty,
+          stopSequences: modelConfig?.stopSequences,
+          maxTokens: modelConfig?.maxTokens || modelConfig?.maxOutput,
         },
         userMessage: {
           messageId: userMessage.messageId,
@@ -358,7 +397,7 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
         },
         responseMessage: {
           messageId: responseMessageId,
-          model: model || 'gpt-4.1',
+          model: resolvedModel,
           endpoint: endpoint || 'openAI',
         },
         conversation: conversation
@@ -378,7 +417,7 @@ export async function askOpenAI(c: Context<{ Bindings: CloudflareBindings }>) {
             sender: 'assistant',
             text: result.responseText,
             isCreatedByUser: false,
-            model: result.responseMessage.model,
+            model: resolvedModel,
             error: false,
             tokenCount: result.tokenCount,
           };

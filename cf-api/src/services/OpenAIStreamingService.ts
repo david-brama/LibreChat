@@ -53,12 +53,24 @@ export class OpenAIStreamingService implements IStreamingService {
       responseMessageId,
       parentMessageId,
       conversationId,
+      systemMessage,
+      temperature,
+      topP,
+      frequencyPenalty,
+      presencePenalty,
+      stopSequences,
     } = options;
 
     console.log('[OpenAIStreamingService] Starting stream:', {
       messageCount: messages.length,
       model,
       responseMessageId,
+      hasSystemMessage: !!systemMessage,
+      temperature,
+      topP,
+      frequencyPenalty,
+      presencePenalty,
+      stopSequences,
     });
 
     try {
@@ -87,7 +99,7 @@ export class OpenAIStreamingService implements IStreamingService {
       });
 
       // Convert messages to OpenAI format with proper typing
-      const openaiMessages: OpenAI.ChatCompletionMessageParam[] = messages.map((msg, index) => {
+      let openaiMessages: OpenAI.ChatCompletionMessageParam[] = messages.map((msg, index) => {
         if (typeof msg.content === 'string') {
           // Simple text message
           console.log(`[OpenAI Streaming] Message ${index}: text-only`, {
@@ -115,10 +127,27 @@ export class OpenAIStreamingService implements IStreamingService {
         }
       });
 
+      // Add system message if provided (OpenAI puts system message first)
+      if (systemMessage) {
+        openaiMessages.unshift({
+          role: 'system',
+          content: systemMessage,
+        });
+        console.log(
+          '[OpenAIStreamingService] Added system message:',
+          systemMessage.substring(0, 100) + '...',
+        );
+      }
+
       console.log(`[OpenAI Streaming] Sending ${openaiMessages.length} messages to OpenAI`, {
         model,
         visionRequest: openaiMessages.some((msg) => Array.isArray(msg.content)),
         maxTokens,
+        hasSystemMessage: !!systemMessage,
+        temperature,
+        topP,
+        frequencyPenalty,
+        presencePenalty,
         detailedMessages: openaiMessages.map((msg, idx) => ({
           index: idx,
           role: msg.role,
@@ -137,14 +166,44 @@ export class OpenAIStreamingService implements IStreamingService {
         })),
       });
 
-      // Start streaming from OpenAI
-      console.log('[OpenAI Streaming] Making OpenAI API call...');
-      const openaiStream = await this.openai.chat.completions.create({
+      // Build OpenAI API request with preset parameters
+      const openaiRequest: OpenAI.ChatCompletionCreateParams = {
         model,
         max_tokens: maxTokens,
         messages: openaiMessages,
         stream: true,
+      };
+
+      // Add preset parameters
+      if (temperature !== undefined) {
+        openaiRequest.temperature = temperature;
+      }
+      if (topP !== undefined) {
+        openaiRequest.top_p = topP;
+      }
+      if (frequencyPenalty !== undefined) {
+        openaiRequest.frequency_penalty = frequencyPenalty;
+      }
+      if (presencePenalty !== undefined) {
+        openaiRequest.presence_penalty = presencePenalty;
+      }
+      if (stopSequences && stopSequences.length > 0) {
+        openaiRequest.stop = stopSequences;
+      }
+
+      console.log('[OpenAIStreamingService] Request parameters:', {
+        model: openaiRequest.model,
+        max_tokens: openaiRequest.max_tokens,
+        temperature: openaiRequest.temperature,
+        top_p: openaiRequest.top_p,
+        frequency_penalty: openaiRequest.frequency_penalty,
+        presence_penalty: openaiRequest.presence_penalty,
+        stop: openaiRequest.stop,
       });
+
+      // Start streaming from OpenAI
+      console.log('[OpenAI Streaming] Making OpenAI API call...');
+      const openaiStream = await this.openai.chat.completions.create(openaiRequest);
 
       console.log('[OpenAI Streaming] OpenAI API call successful, starting to process stream...');
 

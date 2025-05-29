@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS models (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- Auto-incrementing primary key
     name TEXT NOT NULL,                    -- Human-readable model name (e.g., "Sonnet 4")
-    model_id TEXT NOT NULL UNIQUE,         -- API model identifier (e.g., "claude-sonnet-4-20250514")
+    model_id TEXT NOT NULL,                -- API model identifier (e.g., "claude-sonnet-4-20250514") - NOT unique to allow multiple specs per model
     endpoint_type TEXT NOT NULL,           -- Endpoint type: "openAI" or "anthropic"
     thinking BOOLEAN DEFAULT FALSE,        -- Whether model supports thinking/reasoning
     vision BOOLEAN DEFAULT FALSE,          -- Whether model supports vision/image input
@@ -64,6 +64,31 @@ CREATE TABLE IF NOT EXISTS models (
     input_price_per_mtok REAL NOT NULL,    -- Input price per million tokens ($)
     output_price_per_mtok REAL NOT NULL,   -- Output price per million tokens ($)
     is_active BOOLEAN DEFAULT TRUE,        -- Whether model is available for use
+    
+    -- ModelSpecs fields
+    spec TEXT UNIQUE,                      -- Unique spec name (same as modelSpecs.name)
+    label TEXT,                            -- Human-readable label
+    description TEXT,                      -- Model description
+    icon_url TEXT,                         -- Icon URL
+    is_default BOOLEAN DEFAULT FALSE,      -- Whether this is the default model
+    sort_order INTEGER DEFAULT 0,          -- Sort order for display
+    system_message TEXT,                   -- System message for pre-defined behavior
+    
+    -- Preset fields flattened into models table
+    model_label TEXT,                      -- Model label from preset
+    prompt_prefix TEXT,                    -- Prompt prefix from preset
+    temperature REAL,                      -- Temperature parameter
+    top_p REAL,                            -- Top P parameter
+    top_k INTEGER,                         -- Top K parameter (for Anthropic)
+    frequency_penalty REAL,                -- Frequency penalty (for OpenAI)
+    presence_penalty REAL,                 -- Presence penalty (for OpenAI)
+    max_tokens INTEGER,                    -- Max tokens override
+    stop_sequences TEXT,                   -- JSON array of stop sequences
+    reasoning_effort TEXT,                 -- Reasoning effort for omni models
+    resend_files BOOLEAN DEFAULT FALSE,    -- Whether to resend files
+    prompt_cache BOOLEAN DEFAULT FALSE,    -- Whether to use prompt cache
+    thinking_budget INTEGER,               -- Thinking budget for Anthropic
+    
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -150,7 +175,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(convers
 CREATE INDEX IF NOT EXISTS idx_models_endpoint_type ON models(endpoint_type);
 CREATE INDEX IF NOT EXISTS idx_models_active ON models(is_active);
 CREATE INDEX IF NOT EXISTS idx_models_endpoint_active ON models(endpoint_type, is_active);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_models_model_id ON models(model_id);
+CREATE INDEX IF NOT EXISTS idx_models_model_id ON models(model_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_models_spec ON models(spec);
+CREATE INDEX IF NOT EXISTS idx_models_endpoint_active_spec ON models(endpoint_type, is_active, spec);
+CREATE INDEX IF NOT EXISTS idx_models_default ON models(is_default);
+CREATE INDEX IF NOT EXISTS idx_models_sort_order ON models(sort_order);
 
 -- Files indexes
 CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id);

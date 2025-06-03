@@ -141,5 +141,8 @@
       "admin/",
       "packages/"
     ]
+  },
+  "dependencies": {
+    "oauth4webapi": "^3.5.1"
   }
 }
